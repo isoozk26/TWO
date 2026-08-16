@@ -261,10 +261,20 @@ def detect_filter_type_from_csv_desc(desc: str) -> str:
 
 
 def filter_type_for_title(filter_type_raw: str) -> str:
-    ft = (filter_type_raw or "").strip()
-    if ft.lower() == "kabin hava filtresi":
-        return "Polen Filtresi"
-    return ft.title()
+    ft = " ".join(str(filter_type_raw or "").strip().split())
+    aliases = {
+        "hava filtresi": "Hava Filtresi",
+        "yag filtresi": "Yağ Filtresi",
+        "yağ filtresi": "Yağ Filtresi",
+        "yakit filtresi": "Yakıt Filtresi",
+        "yakıt filtresi": "Yakıt Filtresi",
+        "polen filtresi": "Polen Filtresi",
+        "kabin hava filtresi": "Polen Filtresi",
+        "hidrolik filtre": "Hidrolik Filtre",
+        "hidrolik şanzıman filtresi": "Hidrolik Şanzıman Filtresi",
+        "hidrolik sanziman filtresi": "Hidrolik Şanzıman Filtresi",
+    }
+    return aliases.get(ft.casefold(), ft.title() if ft else "Hava Filtresi")
 
 
 # ====== FILTRON KOD PARSE ====================================================
@@ -677,7 +687,7 @@ def create_product_for_csv_item(item: dict) -> Optional[dict]:
         "product": {
             "title": f"FILTRON {title_code} {filter_type_title}".strip(),
             "vendor": "FILTRON",
-            "product_type": filter_type_raw,
+            "product_type": filter_type_title,
             "status": CREATE_STATUS,
             "published": True,
             "images": images_payload,
@@ -1178,8 +1188,8 @@ def build_tags_csv(external_code: str, filter_type_raw: str, mann_display: Optio
     if external_code:
         tags.append(external_code.strip())
 
-    # Filter type
-    ft = (filter_type_raw or "").strip()
+    # Filter type: Shopify Tür ile aynı normalize edilmiş yazım
+    ft = filter_type_for_title(filter_type_raw)
     if ft:
         tags.append(ft)
     

@@ -1574,7 +1574,7 @@ def build_tags_csv(external_code: str, filter_type_raw: str, mann_display: Optio
         tags.append(external_code.strip())
 
     # Filter type
-    ft = (filter_type_raw or "").strip()
+    ft = normalize_filter_type(filter_type_raw)
     if ft:
         tags.append(ft)
     
