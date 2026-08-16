@@ -231,7 +231,9 @@ WRITE_PRODUCT_TITLE     = True   # Shopify ürün başlığı
 WRITE_BODY_HTML         = True   # Ürün açıklaması (SEO body)
 WRITE_META              = True   # Meta description
 WRITE_FITMENT_METAFIELD = True   # Fitment JSON metafield
-WRITE_SEO_STRUCTURED_METAFIELD = (os.getenv("WRITE_SEO_STRUCTURED_METAFIELD", "1") == "1")
+# JSON-LD fiyat/stok ile birlikte her işlenen üründe zorunlu güncellenir.
+# DRY_RUN=1 yalnızca yazmayı simüle eder; bu özellik ortam değişkeniyle kapatılamaz.
+WRITE_SEO_STRUCTURED_METAFIELD = True
 UPDATE_PRICE            = True   # Variant fiyat
 UPDATE_SKU_ON_SHOPIFY   = True   # Variant SKU normalize
 UPDATE_TAGS             = (os.getenv("UPDATE_TAGS", "1") == "1")  # Tag'ler
