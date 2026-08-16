@@ -10,7 +10,7 @@ KURALLAR:
 ✅ MANN ürün sayfasından gerçek kategori okunur.
 ✅ Kategori formatı: Yağ Filtresi, Hava Filtresi, Yakıt Filtresi, Polen Filtresi.
 ✅ Scene7 URL'leri ürün kodu ile doğrulanır; en fazla 3 temiz URL yazılır.
-✅ Dolu URL/görsel alanları korunur; yalnız eksik alanlar PATCH edilir.
+✅ Tüm stoklu MANN kayıtları Selenium ile baştan doğrulanır; URL/görseller yenilenir.
 ✅ Fiyat, stok, SKU ve KOD alanlarına dokunulmaz.
 """
 
@@ -1263,7 +1263,7 @@ def resolve_mann_product_url(code: str) -> Optional[str]:
 
 
 def patch_supabase_row(session: requests.Session, row: dict, category: str, product_url: str, images: List[str]) -> bool:
-    """Yalnız eksik URL/görsel alanlarını ve bulunan kategoriyi güncelle."""
+    """Tam yenilemede doğrulanan kategori, URL ve üç görsel alanını güncelle."""
     payload = {}
     if category:
         payload["kategori"] = category
@@ -1273,8 +1273,9 @@ def patch_supabase_row(session: requests.Session, row: dict, category: str, prod
             payload["mann_url"] = product_url
     for i in range(1, MAX_IMG + 1):
         key = f"img_url_{i}"
-        if not (row.get(key) or "").strip() and i <= len(images):
-            payload[key] = images[i - 1]
+        new_image = images[i - 1] if i <= len(images) else ""
+        if new_image != (row.get(key) or "").strip():
+            payload[key] = new_image
     if not payload:
         return True
 
@@ -1299,18 +1300,15 @@ def patch_supabase_row(session: requests.Session, row: dict, category: str, prod
 def main():
     supa = requests.Session()
     rows = load_supabase_rows(supa)
-    candidates = []
-    for row in rows:
-        has_url = bool((row.get("mann_url") or "").strip())
-        has_all_images = all((row.get(f"img_url_{i}") or "").strip() for i in range(1, MAX_IMG + 1))
-        if not has_url or not has_all_images:
-            candidates.append(row)
+    # Kullanıcı talebi: mevcut URL/görsel dolu olsa bile tüm stoklu kayıtlar
+    # Supabase kodu ile Selenium aramasından baştan geçirilir.
+    candidates = list(rows)
 
     if LIMIT:
         candidates = candidates[:LIMIT]
 
     total = len(candidates)
-    log("INFO", f"SUPABASE START | stoklu MANN kayıtları={len(rows)} | eksik URL/görsel={total}")
+    log("INFO", f"SUPABASE FULL REFRESH START | stoklu MANN kayıtları={len(rows)} | yeniden kontrol={total}")
     if not candidates:
         log("OK", "İşlenecek eksik URL/görsel kaydı yok")
         return
