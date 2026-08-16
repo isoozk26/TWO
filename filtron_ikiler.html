@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FILTRON İkiler Çalıştırıcı</title>
+  <style>
+    :root { font-family: Segoe UI, Arial, sans-serif; color: #17202a; background: #f4f7f9; }
+    body { max-width: 980px; margin: 32px auto; padding: 0 18px; }
+    .card { background: white; border: 1px solid #dce3e8; border-radius: 14px; padding: 24px; box-shadow: 0 5px 18px #0000000d; }
+    h1 { margin-top: 0; color: #0f766e; }
+    h2 { font-size: 18px; margin-top: 26px; }
+    label { display: block; font-weight: 600; margin: 14px 0 6px; }
+    input, textarea { width: 100%; box-sizing: border-box; border: 1px solid #b8c4cc; border-radius: 8px; padding: 11px; font: inherit; }
+    input[readonly] { background: #f4f7f9; }
+    textarea { min-height: 210px; font-family: Consolas, monospace; font-size: 13px; white-space: pre; }
+    button { border: 0; border-radius: 8px; padding: 11px 16px; margin: 10px 8px 0 0; cursor: pointer; font-weight: 600; }
+    .primary { color: white; background: #0f766e; }
+    .secondary { color: #17202a; background: #e5edf0; }
+    .warning { background: #fff7ed; border-left: 4px solid #f97316; padding: 12px; margin-top: 16px; }
+    .success { color: #166534; min-height: 22px; margin-top: 10px; }
+    .kanban { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 20px 0 26px; }
+    .stage-card { min-height: 150px; border: 1px solid #d8e2e7; border-top: 5px solid #0f766e; border-radius: 12px; padding: 16px; background: #fbfdfd; }
+    .stage-card:nth-child(2) { border-top-color: #2563eb; }
+    .stage-card:nth-child(3) { border-top-color: #7c3aed; }
+    .stage-number { color: #64748b; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+    .stage-title { margin: 8px 0; font-size: 16px; font-weight: 700; }
+    .stage-flow { color: #52616b; font-size: 13px; line-height: 1.5; }
+    .command-block { margin-top: 18px; padding-top: 14px; border-top: 1px solid #e5edf0; }
+    .command-block h3 { margin: 0 0 8px; font-size: 15px; }
+    @media (max-width: 760px) { .kanban { grid-template-columns: 1fr; } }
+    code { background: #eef2f4; padding: 2px 5px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>✅ FILTRON İkiler Supabase Çalıştırıcı</h1>
+    <p>PowerShell komutunu şu sırayla hazırlar:</p>
+
+    <div class="kanban">
+      <div class="stage-card">
+        <div class="stage-number">AŞAMA 01</div>
+        <div class="stage-title">Fiyat ve Stok</div>
+        <div class="stage-flow">İkiler B2B → Supabase<br><strong>01_filtron_ikiler_supabase_fiyat_stok.py</strong></div>
+      </div>
+      <div class="stage-card">
+        <div class="stage-number">AŞAMA 02</div>
+        <div class="stage-title">URL ve Görsel</div>
+        <div class="stage-flow">FILTRON sitesi → Supabase<br><strong>02_filtron_ikiler_supabase_url_gorsel.py</strong></div>
+      </div>
+      <div class="stage-card">
+        <div class="stage-number">AŞAMA 03</div>
+        <div class="stage-title">Shopify SEO</div>
+        <div class="stage-flow">Supabase → Shopify<br><strong>03_filtron_supabase_shopify_seo.py</strong></div>
+      </div>
+    </div>
+
+    <h2>Supabase ortam değişkenleri</h2>
+
+    <label for="url">SUPABASE_URL</label>
+    <input id="url" value="https://lrjphkajdkipwjizzxsc.supabase.co" autocomplete="off">
+
+    <label for="table">SUPABASE_TABLE</label>
+    <input id="table" value="IKILER_FILTRON" autocomplete="off">
+
+    <label for="secret">SUPABASE_SECRET_KEY</label>
+    <input id="secret" type="password" value="" placeholder="Secret key değerini buraya girin" autocomplete="new-password">
+
+    <label for="cookiePath">İKİLER COOKIE DOSYASI</label>
+    <input id="cookiePath" value="C:\\VPS\\IKILER_V_2\\FILTRON\\cookie.txt" autocomplete="off">
+
+    <label for="cookie">İKİLER COOKIE DEĞERİ</label>
+    <textarea id="cookie" rows="4" autocomplete="off"></textarea>
+
+    <label for="shopifyToken">SHOPIFY_TOKEN</label>
+    <input id="shopifyToken" type="password" value="" placeholder="Shopify Admin API token" autocomplete="new-password">
+
+    <label for="openaiKey">OPENAI_API_KEY</label>
+    <input id="openaiKey" type="password" value="" placeholder="OpenAI API key" autocomplete="new-password">
+
+    <label for="shopSubdomain">SHOP_SUBDOMAIN</label>
+    <input id="shopSubdomain" value="z42kyc-dt" autocomplete="off">
+
+    <label for="shopifyApiVersion">SHOPIFY_API_VERSION</label>
+    <input id="shopifyApiVersion" value="2024-01" autocomplete="off">
+
+    <label for="openaiModel">OPENAI_MODEL</label>
+    <input id="openaiModel" value="gpt-4o-mini" autocomplete="off">
+
+    <label for="dryRun">DRY_RUN (1=test, 0=Shopify’a gerçek yazma)</label>
+    <input id="dryRun" value="0" autocomplete="off">
+
+    <label for="maxRows">MAX_ROWS (0=tüm Supabase kayıtları)</label>
+    <input id="maxRows" value="360" autocomplete="off">
+
+    <label for="priceMultiplier">PRICE_MULTIPLIER</label>
+    <input id="priceMultiplier" value="1.60" autocomplete="off">
+
+    <label for="shopifySleep">SHOPIFY_SLEEP</label>
+    <input id="shopifySleep" value="0.6" autocomplete="off">
+
+    <label for="mannSleep">MANN_SLEEP</label>
+    <input id="mannSleep" value="0.2" autocomplete="off">
+
+    <label for="openaiSleep">OPENAI_SLEEP</label>
+    <input id="openaiSleep" value="0.2" autocomplete="off">
+
+    <label for="logFile">LOG_FILE</label>
+    <input id="logFile" value="filtron_seo_debug.log" autocomplete="off">
+
+    <label for="failedFile">FAILED_FILE</label>
+    <input id="failedFile" value="filtron_failed.json" autocomplete="off">
+
+    <label for="progressFile">PROGRESS_FILE</label>
+    <input id="progressFile" value="filtron_debug_progress.jsonl" autocomplete="off">
+
+    <h2>Çalıştırılacak Python dosyaları</h2>
+
+    <label for="priceStock">1. Python — fiyat ve stok</label>
+    <input id="priceStock" value="C:\\VPS\\IKILER_V_2\\FILTRON\\01_filtron_ikiler_supabase_fiyat_stok.py" autocomplete="off">
+
+    <label for="urlImages">2. Python — URL ve görseller</label>
+    <input id="urlImages" value="C:\\VPS\\IKILER_V_2\\FILTRON\\02_filtron_ikiler_supabase_url_gorsel.py" autocomplete="off">
+
+    <label for="seoScript">3. Python — Supabase → Shopify SEO</label>
+    <input id="seoScript" value="C:\\VPS\\IKILER_V_2\\FILTRON\\03_filtron_supabase_shopify_seo.py" autocomplete="off">
+
+    <button class="primary" id="generate">Üç Komutu Oluştur</button>
+    <button class="secondary" id="clear">Alanları Temizle</button>
+    <div class="success" id="status"></div>
+
+    <h2>Ayrı PowerShell komutları</h2>
+    <div class="command-block">
+      <h3>1/3 — Fiyat ve Stok</h3>
+      <textarea id="output1" readonly></textarea>
+      <button class="secondary copy-btn" data-output="output1" disabled>1. Komutu Kopyala</button>
+    </div>
+    <div class="command-block">
+      <h3>2/3 — URL ve Görsel</h3>
+      <textarea id="output2" readonly></textarea>
+      <button class="secondary copy-btn" data-output="output2" disabled>2. Komutu Kopyala</button>
+    </div>
+    <div class="command-block">
+      <h3>3/3 — Supabase → Shopify SEO</h3>
+      <textarea id="output3" readonly></textarea>
+      <button class="secondary copy-btn" data-output="output3" disabled>3. Komutu Kopyala</button>
+    </div>
+
+    <div class="warning">
+      <strong>🔐 Yerel güvenlik:</strong> Anahtarlar bu yerel HTML dosyasında hazırdır ve ekranda maskeli görünür. Dosyayı paylaşmayın veya Git’e göndermeyin. Tarayıcı doğrudan PowerShell çalıştıramaz; oluşturulan komutu PowerShell’e yapıştırıp çalıştırın. Herhangi bir aşama hata verirse sonraki aşama çalıştırılmaz.
+    </div>
+
+    <h2>Çalıştırma adımları</h2>
+    <ol>
+      <li>Secret Key’i yukarıdaki alana girin.</li>
+      <li><strong>Üç Aşamalı Komutu Oluştur</strong> düğmesine basın.</li>
+      <li><strong>Komutu Kopyala</strong> düğmesine basın.</li>
+      <li>PowerShell’e yapıştırıp Enter’a basın.</li>
+      <li>Önce fiyat/stok, sonra URL/görsel, son olarak Supabase → Shopify aktarımı başlar.</li>
+      <li>İlk testte <code>DRY_RUN=1</code> kalmalıdır. Gerçek Shopify yazımı için yalnızca kontrollü onaydan sonra <code>DRY_RUN=0</code> yapın.</li>
+    </ol>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let commands = {1: '', 2: '', 3: ''};
+
+    function psQuote(value) {
+      return "'" + String(value).replaceAll("'", "''") + "'";
+    }
+
+    function base64(value) {
+      return btoa(unescape(encodeURIComponent(value)));
+    }
+
+    function commonSupabase(url, table, secret) {
+      return [
+        "$env:SUPABASE_URL = " + psQuote(url),
+        "$env:SUPABASE_TABLE = " + psQuote(table),
+        "$env:SUPABASE_SECRET_KEY = " + psQuote(secret)
+      ];
+    }
+
+    function generate() {
+      const url = $('url').value.trim();
+      const table = $('table').value.trim();
+      const secret = $('secret').value;
+      const cookiePath = $('cookiePath').value.trim();
+      const cookie = $('cookie').value.trim();
+      const shopifyToken = $('shopifyToken').value;
+      const openaiKey = $('openaiKey').value;
+      const shopSubdomain = $('shopSubdomain').value.trim();
+      const shopifyApiVersion = $('shopifyApiVersion').value.trim();
+      const openaiModel = $('openaiModel').value.trim();
+      const dryRun = $('dryRun').value.trim();
+      const maxRows = $('maxRows').value.trim();
+      const priceMultiplier = $('priceMultiplier').value.trim();
+      const shopifySleep = $('shopifySleep').value.trim();
+      const mannSleep = $('mannSleep').value.trim();
+      const openaiSleep = $('openaiSleep').value.trim();
+      const logFile = $('logFile').value.trim();
+      const failedFile = $('failedFile').value.trim();
+      const progressFile = $('progressFile').value.trim();
+      const priceStock = $('priceStock').value.trim();
+      const urlImages = $('urlImages').value.trim();
+      const seoScript = $('seoScript').value.trim();
+
+      if (!url || !table || !secret || !cookiePath || !cookie || !shopifyToken || !openaiKey || !shopSubdomain || !shopifyApiVersion || !openaiModel || !priceStock || !urlImages || !seoScript) {
+        $('status').textContent = '🔴 Gerekli alanlar eksik.';
+        $('output1').value = $('output2').value = $('output3').value = '';
+        document.querySelectorAll('.copy-btn').forEach(b => b.disabled = true);
+        return;
+      }
+
+      const cookieB64 = base64(cookie);
+      const cookieLines = [
+        "$cookieBytes = [Convert]::FromBase64String(" + psQuote(cookieB64) + ")",
+        "[IO.File]::WriteAllBytes(" + psQuote(cookiePath) + ", $cookieBytes)"
+      ];
+      const supaLines = commonSupabase(url, table, secret);
+
+      commands[1] = [
+        ...cookieLines, ...supaLines,
+        "Write-Host '1/3 Fiyat ve stok aktarimi basliyor...' -ForegroundColor Cyan",
+        "python " + psQuote(priceStock),
+        "Write-Host '1/3 tamamlandi.' -ForegroundColor Green"
+      ].join('\n');
+
+      commands[2] = [
+        ...supaLines,
+        "Write-Host '2/3 URL ve gorsel aktarimi basliyor...' -ForegroundColor Cyan",
+        "python " + psQuote(urlImages),
+        "Write-Host '2/3 tamamlandi.' -ForegroundColor Green"
+      ].join('\n');
+
+      commands[3] = [
+        ...supaLines,
+        "$env:SHOPIFY_TOKEN = " + psQuote(shopifyToken),
+        "$env:OPENAI_API_KEY = " + psQuote(openaiKey),
+        "$env:SHOP_SUBDOMAIN = " + psQuote(shopSubdomain),
+        "$env:SHOPIFY_API_VERSION = " + psQuote(shopifyApiVersion),
+        "$env:OPENAI_MODEL = " + psQuote(openaiModel),
+        "$env:DRY_RUN = " + psQuote(dryRun || '0'),
+        "$env:MAX_ROWS = " + psQuote(maxRows || '360'),
+        "$env:PRICE_MULTIPLIER = " + psQuote(priceMultiplier || '1.60'),
+        "$env:SHOPIFY_SLEEP = " + psQuote(shopifySleep || '0.6'),
+        "$env:MANN_SLEEP = " + psQuote(mannSleep || '0.2'),
+        "$env:OPENAI_SLEEP = " + psQuote(openaiSleep || '0.2'),
+        "$env:LOG_FILE = " + psQuote(logFile || 'filtron_seo_debug.log'),
+        "$env:FAILED_FILE = " + psQuote(failedFile || 'filtron_failed.json'),
+        "$env:PROGRESS_FILE = " + psQuote(progressFile || 'filtron_debug_progress.jsonl'),
+        "Write-Host '3/3 Supabase’dan Shopify SEO aktarimi basliyor...' -ForegroundColor Cyan",
+        "python " + psQuote(seoScript),
+        "Write-Host '3/3 tamamlandi.' -ForegroundColor Green"
+      ].join('\n');
+
+      $('output1').value = commands[1];
+      $('output2').value = commands[2];
+      $('output3').value = commands[3];
+      document.querySelectorAll('.copy-btn').forEach(b => b.disabled = false);
+      $('status').textContent = '✅ Üç ayrı komut hazırlandı. Sırayla çalıştırın.';
+    }
+
+    $('generate').addEventListener('click', generate);
+    document.querySelectorAll('.copy-btn').forEach(button => {
+      button.addEventListener('click', async () => {
+        await navigator.clipboard.writeText($(button.dataset.output).value);
+        $('status').textContent = '✅ Komut panoya kopyalandı.';
+      });
+    });
+    $('clear').addEventListener('click', () => {
+      $('secret').value = '';
+      $('cookie').value = '';
+      $('shopifyToken').value = '';
+      $('openaiKey').value = '';
+      $('output1').value = $('output2').value = $('output3').value = '';
+      document.querySelectorAll('.copy-btn').forEach(b => b.disabled = true);
+      $('status').textContent = '🟠 Gizli alanlar ve komutlar temizlendi.';
+      commands = {1: '', 2: '', 3: ''};
+    });
+  </script>
+</body>
+</html>

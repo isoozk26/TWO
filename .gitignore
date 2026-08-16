@@ -1,0 +1,28 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+cookie.txt
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime data, logs and local state
+*.log
+*.jsonl
+*_failed.json
+*_progress.json
+filtron_data.csv
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local/editor files
+.vscode/
+.idea/
+.DS_Store
+
+# Local backup copies
+*.backup_before_*
