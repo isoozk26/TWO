@@ -59,6 +59,7 @@ TYPE_DELAY = 0.04  # Yazma hızı
 DROPDOWN_WAIT_SECONDS = 5.0  # Ürün dropdown'ı için zorunlu bekleme
 PRODUCT_WAIT = 10.0  # Ürün sayfası yükleme
 GOOGLE_WAIT_SECONDS = 5.0  # MANN dropdown sonucu yoksa Google bekleme
+GOOGLE_CAPTCHA_WAIT_SECONDS = 60.0  # Görünür Chrome'da CAPTCHA çözümü için süre
 
 SLEEP_BETWEEN = 0.10  # İşlemler arası bekleme
 LIMIT = 0  # 0 = sınırsız
@@ -1079,8 +1080,13 @@ def google_click_mann_result(d, code: str) -> Optional[str]:
     wait_dom_interactive(d, 14.0)
     time.sleep(GOOGLE_WAIT_SECONDS)
     if "/sorry/" in (d.current_url or "").lower():
-        log("WARN", f"Google otomasyon doğrulaması/CAPTCHA nedeniyle sonuç alınamadı: {code}")
-        return None
+        log("WARN", f"Google CAPTCHA/otomasyon doğrulaması bekleniyor: {code}")
+        end = time.time() + GOOGLE_CAPTCHA_WAIT_SECONDS
+        while time.time() < end and "/sorry/" in (d.current_url or "").lower():
+            time.sleep(1.0)
+        if "/sorry/" in (d.current_url or "").lower():
+            log("WARN", f"Google CAPTCHA çözülmedi: {code}")
+            return None
 
     code_compact = re.sub(r"[^A-Z0-9]", "", normalize_code_display(code).upper())
     candidates = d.find_elements(By.CSS_SELECTOR, "a[href]")
