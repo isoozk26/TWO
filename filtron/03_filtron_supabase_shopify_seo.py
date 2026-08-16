@@ -1191,6 +1191,31 @@ def _plain_text(value: str) -> str:
     return BeautifulSoup(str(value), "html.parser").get_text(" ", strip=True)
 
 
+def _extract_mann_from_product(product: dict) -> Optional[str]:
+    """Mevcut ürün başlığındaki açık MANN eşdeğer kodunu çıkarır."""
+    title = str((product or {}).get("title") or "")
+    match = re.search(r"\bMANN(?:-FILTER)?\s+([^|]+)", title, flags=re.IGNORECASE)
+    if not match:
+        return None
+    value = re.sub(r"\s+", " ", match.group(1)).strip(" -|/")
+    value = re.sub(
+        r"\s+(?:Hava|Yağ|Yakıt|Polen|Kabin|Şanzıman)\s+Filt.*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    ).strip(" -|/")
+    return value or None
+
+
+def _short_jsonld_description(value: str, fallback: str, max_length: int = 320) -> str:
+    """JSON-LD description'ı HTML'siz, tek satır ve sınırlı uzunlukta üretir."""
+    text = re.sub(r"\s+", " ", _plain_text(value or fallback)).strip()
+    if len(text) <= max_length:
+        return text
+    shortened = text[:max_length].rsplit(" ", 1)[0].rstrip(" ,.;:-")
+    return shortened + "."
+
+
 def upsert_seo_structured_data(
     product_id: int,
     canonical_sku: str,
@@ -1227,7 +1252,12 @@ def upsert_seo_structured_data(
         if src and src not in images:
             images.append(src)
 
-    description = _plain_text(meta_desc) or _plain_text(product.get("body_html") or product.get("title") or "")
+    resolved_mann_display = mann_display or _extract_mann_from_product(product)
+    fallback_description = (
+        f"{product.get('title') or f'FILTRON {external_code or canonical_sku} {filter_type_title}'}. "
+        f"{filter_type_title} için uyum ve ürün bilgilerini kontrol ederek güvenli alışveriş yapın."
+    )
+    description = _short_jsonld_description(meta_desc, fallback_description)
     document = {
         "@context": "https://schema.org",
         "@type": "Product",
@@ -1254,8 +1284,8 @@ def upsert_seo_structured_data(
         {"@type": "PropertyValue", "name": "Filtre Türü", "value": filter_type_title},
         {"@type": "PropertyValue", "name": "OEM / Ürün Kodu", "value": external_code or canonical_sku},
     ]
-    if mann_display:
-        properties.append({"@type": "PropertyValue", "name": "MANN-FILTER Kodu", "value": mann_display})
+    if resolved_mann_display:
+        properties.append({"@type": "PropertyValue", "name": "MANN-FILTER Kodu", "value": resolved_mann_display})
     if total_models:
         properties.append({"@type": "PropertyValue", "name": "Uyumlu Araç Sayısı", "value": f"{int(total_models)} Model"})
     document["additionalProperty"] = properties
