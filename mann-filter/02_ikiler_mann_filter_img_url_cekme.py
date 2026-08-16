@@ -834,6 +834,27 @@ def collect_scene7_images_only_for_code(d, code: str) -> List[str]:
     return out
 
 
+def wait_for_scene7_code(d, code: str, timeout: float = PRODUCT_WAIT) -> bool:
+    """Ürün sayfasındaki JS/HTML Scene7 verisinin gelmesini bekle."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            html = d.page_source or ""
+            for raw_url in extract_scene7_from_html(html):
+                if url_has_code(clean_scene7_url(raw_url), code):
+                    return True
+            imgs = d.find_elements(By.CSS_SELECTOR, "img")
+            for img in imgs[:300]:
+                for attr in ("src", "data-src", "data-original", "data-lazy", "data-zoom-image", "data-large-image"):
+                    value = (img.get_attribute(attr) or "").strip()
+                    if value and url_has_code(clean_scene7_url(value), code):
+                        return True
+        except Exception:
+            pass
+        time.sleep(0.20)
+    return False
+
+
 # ===================== DROPDOWN ARAMA =====================
 def find_search_input(d):
     """Arama input'unu bul"""
@@ -1356,6 +1377,9 @@ def main():
                         WebDriverWait(d, PRODUCT_WAIT).until(EC.presence_of_element_located((By.CSS_SELECTOR, "body")))
                     except Exception:
                         pass
+                    has_scene7 = wait_for_scene7_code(d, search_code, PRODUCT_WAIT)
+                    if not has_scene7:
+                        log("DBG", f"Scene7 bekleme zaman aşımı veya ürün görseli yok: {search_code}")
                     category = get_category_from_product_page(d, search_code)
                     images = collect_scene7_images_only_for_code(d, search_code)
                 finally:
