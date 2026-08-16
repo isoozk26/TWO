@@ -201,6 +201,7 @@ _load_dotenv()
 
 # Shopify bağlantı bilgileri
 SHOP_SUBDOMAIN = os.getenv("SHOP_SUBDOMAIN", "z42kyc-dt")
+STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "filtreoto.com").strip().rstrip("/")
 SHOPIFY_TOKEN  = os.getenv("SHOPIFY_TOKEN", "")
 API_VERSION    = os.getenv("SHOPIFY_API_VERSION", "2024-01")
 
@@ -227,6 +228,7 @@ WRITE_PRODUCT_TITLE     = True   # Shopify ürün başlığı
 WRITE_BODY_HTML         = True   # Ürün açıklaması (SEO body)
 WRITE_META              = True   # Meta description
 WRITE_FITMENT_METAFIELD = True   # Fitment JSON metafield
+WRITE_SEO_STRUCTURED_METAFIELD = (os.getenv("WRITE_SEO_STRUCTURED_METAFIELD", "1") == "1")
 UPDATE_PRICE            = True   # Variant fiyat
 UPDATE_SKU_ON_SHOPIFY   = True   # Variant SKU normalize
 UPDATE_TAGS             = (os.getenv("UPDATE_TAGS", "1") == "1")  # Tag'ler
@@ -1126,6 +1128,91 @@ def upsert_metafield(product_id: int, namespace: str, key: str, mtype: str, valu
     if not ok:
         log(f"Metafield CREATE failed: {namespace}.{key} -> {msg}", "ERROR")
     return ok
+
+
+def _plain_text(value: str) -> str:
+    """HTML veya düz metni JSON-LD için güvenli plain text'e çevirir."""
+    if not value:
+        return ""
+    return BeautifulSoup(str(value), "html.parser").get_text(" ", strip=True)
+
+
+def upsert_seo_structured_data(
+    product_id: int,
+    canonical_sku: str,
+    external_code: str,
+    filter_type_title: str,
+    price: str,
+    stock_qty: int,
+    meta_desc: str = "",
+    mann_display: Optional[str] = None,
+    total_models: int = 0,
+) -> bool:
+    """Ürün Product JSON-LD'sini custom.seo_structured_data metafield'ına yazar."""
+    if not WRITE_SEO_STRUCTURED_METAFIELD:
+        return True
+
+    if DRY_RUN:
+        log(
+            f"[DRY_RUN] seo_structured_data -> pid={product_id} "
+            f"sku={canonical_sku} type={filter_type_title} stock={stock_qty}"
+        )
+        return True
+
+    product_data = shopify_get(f"{BASE}/products/{product_id}.json", timeout=25)
+    product = (product_data or {}).get("product") or {}
+    handle = str(product.get("handle") or "").strip()
+    if not handle:
+        log(f"seo_structured_data: Shopify handle bulunamadı pid={product_id}", "ERROR")
+        return False
+
+    storefront_url = f"https://{STOREFRONT_DOMAIN}/products/{handle}"
+    images = []
+    for image in product.get("images") or []:
+        src = str(image.get("src") or "").strip()
+        if src and src not in images:
+            images.append(src)
+
+    description = _plain_text(meta_desc) or _plain_text(product.get("body_html") or product.get("title") or "")
+    document = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "@id": f"{storefront_url}#product",
+        "url": storefront_url,
+        "name": str(product.get("title") or f"FILTRON {external_code or canonical_sku} {filter_type_title}").strip(),
+        "image": images,
+        "description": description,
+        "sku": canonical_sku,
+        "mpn": external_code or canonical_sku,
+        "brand": {"@type": "Brand", "name": "FILTRON"},
+        "category": filter_type_title,
+        "offers": {
+            "@type": "Offer",
+            "url": storefront_url,
+            "priceCurrency": "TRY",
+            "price": str(price),
+            "availability": "https://schema.org/InStock" if int(stock_qty or 0) > 0 else "https://schema.org/OutOfStock",
+            "itemCondition": "https://schema.org/NewCondition",
+            "seller": {"@type": "Organization", "name": "FiltreOto"},
+        },
+    }
+    properties = [
+        {"@type": "PropertyValue", "name": "Filtre Türü", "value": filter_type_title},
+        {"@type": "PropertyValue", "name": "OEM / Ürün Kodu", "value": external_code or canonical_sku},
+    ]
+    if mann_display:
+        properties.append({"@type": "PropertyValue", "name": "MANN-FILTER Kodu", "value": mann_display})
+    if total_models:
+        properties.append({"@type": "PropertyValue", "name": "Uyumlu Araç Sayısı", "value": f"{int(total_models)} Model"})
+    document["additionalProperty"] = properties
+
+    return upsert_metafield(
+        product_id,
+        "custom",
+        "seo_structured_data",
+        "json",
+        json.dumps(document, ensure_ascii=False, separators=(",", ":")),
+    )
 
 
 def normalize_brand_key(name: str) -> str:
@@ -2648,6 +2735,23 @@ def main():
                     stats.mark_failed(canonical_sku, reason)
                     continue
 
+                if not upsert_seo_structured_data(
+                    product_id=product_id,
+                    canonical_sku=canonical_sku,
+                    external_code=external_code,
+                    filter_type_title=filter_type_title,
+                    price=price,
+                    stock_qty=stock_qty,
+                ):
+                    reason = "seo_structured_data güncelleme başarısız"
+                    failed.append({
+                        "sku": canonical_sku, "external": external_code,
+                        "step": "seo_structured_data", "product_id": product_id,
+                        "error": reason,
+                    })
+                    stats.mark_failed(canonical_sku, reason)
+                    continue
+
                 success += 1
                 debug_step(
                     sku=canonical_sku, external=external_code,
@@ -3036,6 +3140,26 @@ def main():
                     "json",
                     json.dumps(fitment_json, ensure_ascii=False),
                 )
+
+            if not upsert_seo_structured_data(
+                product_id=product_id,
+                canonical_sku=canonical_sku,
+                external_code=external_code,
+                filter_type_title=filter_type_title,
+                price=price,
+                stock_qty=stock_qty,
+                meta_desc=meta_desc,
+                mann_display=mann_display,
+                total_models=total_models,
+            ):
+                reason = "seo_structured_data güncelleme başarısız"
+                failed.append({
+                    "sku": canonical_sku, "external": external_code,
+                    "step": "seo_structured_data", "product_id": product_id,
+                    "error": reason,
+                })
+                stats.mark_failed(canonical_sku, reason)
+                continue
 
             # Smart koleksiyon, standart kategori etiketi üzerinden otomatik eşleştirir.
             stats.set_current(canonical_sku, "marka koleksiyonları")
