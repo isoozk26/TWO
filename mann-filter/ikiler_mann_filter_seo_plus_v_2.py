@@ -1,0 +1,1572 @@
+# -*- coding: utf-8 -*-
+
+r"""
+================================================================================
+MANN FILTER SEO ENRICHER [V4.0 - MAHLE STYLE TEMPLATE]
+
+INPUT: mann_output_img_.csv (MANN-FILTER ürünleri)
+CROSS-REF: ufi_cross_referans_STABLE.csv
+OUTPUT: Shopify ürün oluşturma/güncelleme
+
+ÖZELLİKLER:
+1) SKU INDEX - Shopify'dan tüm ürünleri çeker, SKU ile index yapar
+2) HTML ŞABLON - MAHLE master template ile birebir aynı
+3) DIŞ LİNKLER - Sadece MANN-FILTER (3 link → 1 link)
+4) ŞASE NO - "Şase No ile Kontrol" (Şase/Marka-Model DEĞİL)
+5) ETİKETLER - 6 önemli marka (HENGST, BOSCH, MAHLE, FILTRON, PURFLUX, UFI)
+6) EŞDEĞER BÖLÜMÜ - HTML'de eşdeğer kodlar tablosu
+7) STOK MANTIK - CSV stoktan düşürme (5+→5, 4→3, 3→2, 2→1, 1→1, 0→0)
+8) FİYAT - 1.58x çarpan
+9) BAŞLIK - 70 char max, 1-3 araç
+10) META - 160 char, 6 rotating template (MAHLE style)
+
+================================================================================
+"""
+
+import os
+import json
+import re
+import time
+import csv
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
+
+import requests
+from bs4 import BeautifulSoup
+from tqdm import tqdm
+from openai import OpenAI
+
+
+# =============================================================================
+# CONFIG
+# =============================================================================
+
+SHOP_SUBDOMAIN = os.getenv("SHOP_SUBDOMAIN", "z42kyc-dt")
+SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN", "")
+API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+
+MANN_CSV_PATH = os.getenv("MANN_CSV_PATH", "mann_output_img_.csv")
+UFI_CROSS_REF_PATH = os.getenv("UFI_CROSS_REF_PATH", "ufi_cross_referans_STABLE.csv")
+
+PRICE_MULTIPLIER = float(os.getenv("PRICE_MULTIPLIER", "1.85"))  # 1.79 → 1.85
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+DRY_RUN = (os.getenv("DRY_RUN", "0") == "1")
+CREATE_STATUS = os.getenv("CREATE_STATUS", "active")
+MAX_PRODUCTS = int(os.getenv("MAX_PRODUCTS", "999999"))  # Limit kaldırıldı - tüm ürünler
+
+# Satır aralığı: START_ROW dahil, END_ROW hariç (Python slice gibi)
+# Örnek: START_ROW=0 END_ROW=5  → 0,1,2,3,4 (5 ürün)
+# Örnek: START_ROW=5 END_ROW=10 → 5,6,7,8,9 (5 ürün)
+START_ROW = int(os.getenv("START_ROW", "0"))
+END_ROW   = int(os.getenv("END_ROW",   "0"))   # 0 = sınır yok
+
+WRITE_PRODUCT_TITLE = True
+WRITE_BODY_HTML = True
+WRITE_META = True
+UPDATE_PRICE = True
+UPDATE_TAGS = True
+
+TITLE_MAX_LEN = 70
+BODY_MAX_TOTAL_MODELS = 160
+BODY_MAX_MODELS_PER_BRAND = 25
+
+SHOPIFY_SLEEP = float(os.getenv("SHOPIFY_SLEEP", "0.6"))
+MANN_SLEEP = float(os.getenv("MANN_SLEEP", "0.2"))
+OPENAI_SLEEP = float(os.getenv("OPENAI_SLEEP", "0.2"))
+
+LOG_FILE = os.getenv("LOG_FILE", "mann_seo_debug.log")
+FAILED_FILE = os.getenv("FAILED_FILE", "mann_failed.json")
+
+UA_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.8",
+    "Accept": "*/*",
+}
+
+# Shopify Collection Brands (Verilen liste + normalizasyon)
+COLLECTION_BRANDS = {
+    "ALFA ROMEO": "Alfa Romeo",
+    "AUDI": "Audi",
+    "BMW": "BMW",
+    "CHEVROLET": "Chevrolet",
+    "CHEVROLET EUROPE": "Chevrolet",
+    "CHRYSLER": "Chrysler",
+    "CITROEN": "Citroen",
+    "DAIHATSU": "Daihatsu",
+    "DODGE": "Dodge",
+    "DS AUTOMOBILES": "DS Automobiles",
+    "FIAT": "Fiat",
+    "FORD": "Ford",
+    "FSO MOTOR": "FSO Motor",
+    "GEELY": "Geely",
+    "HYUNDAI": "Hyundai",
+    "INNOCENTI": "Innocenti",
+    "ISUZU": "Isuzu",
+    "IVECO": "Iveco",
+    "JAGUAR": "Jaguar",
+    "KIA MOTORS": "KIA Motors",
+    "LANCIA": "Lancia",
+    "LEXUS": "Lexus",
+    "LOTUS": "Lotus",
+    "MAZDA": "Mazda",
+    "MEGA": "Mega",
+    "MERCEDES-BENZ": "Mercedes-Benz",
+    "NISSAN": "Nissan",
+    "OPEL": "Opel",
+    "PEUGEOT": "Peugeot",
+    "RAVON": "Ravon",
+    "RENAULT": "Renault",
+    "SEAT": "Seat",
+    "SKODA": "Skoda",
+    "SSANGYONG": "SsangYong",
+    "SUZUKI": "Suzuki",
+    "TOYOTA": "Toyota",
+    "UZ-DAEWOO": "Uz-Daewoo",
+    "VAUXHALL": "Vauxhall",
+    "VAUXHALL-BEDFORD": "Vauxhall-Bedford",
+    "VOLVO CARS": "Volvo Cars",
+    "VW": "VW",
+    "VOLKSWAGEN": "VW",  # VW'ye normalize
+    "ZASTAVA": "Zastava",
+}
+
+
+# =============================================================================
+# SHOPIFY COLLECTION FUNCTIONS (MEVCUT KOLEKSIYONLAR - YENİ OLUŞTURMA YOK)
+# =============================================================================
+
+def load_all_collections() -> Dict[str, int]:
+    """
+    Shopify'daki TÜM custom collection'ları yükle (sayfalama ile)
+    Return: {"Kabin Hava Filtresi": 123456, "Mercedes-Benz": 234567, ...}
+    """
+    log("📁 Shopify koleksiyonları yükleniyor...")
+    collections_map = {}
+    since_id = 0
+    try:
+        while True:
+            params = {"limit": 250, "since_id": since_id}
+            data = shopify_get(f"{BASE}/custom_collections.json", params=params, timeout=30)
+            if not data or not data.get("custom_collections"):
+                break
+            batch = data["custom_collections"]
+            if not batch:
+                break
+            for coll in batch:
+                title   = coll.get("title", "").strip()
+                coll_id = coll.get("id")
+                if title and coll_id:
+                    collections_map[title] = int(coll_id)
+            since_id = batch[-1]["id"]
+            if len(batch) < 250:
+                break
+            time.sleep(0.3)
+        log(f"✅ {len(collections_map)} koleksiyon yüklendi")
+        for title in sorted(collections_map.keys()):
+            log(f"  - {title} (ID: {collections_map[title]})")
+        return collections_map
+    except Exception as e:
+        log(f"❌ Koleksiyonlar yüklenemedi: {e}", "ERROR")
+        return {}
+
+
+def add_product_to_collection_by_title(product_id: int, collection_title: str, collections_map: Dict[str, int]) -> bool:
+    """
+    Ürünü koleksiyona ekle (koleksiyon title ile)
+
+    Args:
+        product_id: Shopify product ID
+        collection_title: "Kabin Hava Filtresi", "Mercedes-Benz" vb.
+        collections_map: load_all_collections() ile yüklenen map
+
+    Return: True/False
+    """
+    if not product_id or not collection_title:
+        return False
+
+    # Koleksiyon ID'sini bul
+    collection_id = collections_map.get(collection_title)
+
+    if not collection_id:
+        # Koleksiyon bulunamadı
+        return False
+
+    # Zaten ekliyse skip
+    params = {"product_id": product_id, "collection_id": collection_id}
+    data = shopify_get(f"{BASE}/collects.json", params=params, timeout=25)
+
+    if data and data.get("collects"):
+        return True  # Zaten ekli
+
+    # Ekle
+    if DRY_RUN:
+        log(f"  [DRY_RUN] Koleksiyona eklenecek: {collection_title}")
+        return True
+
+    payload = {
+        "collect": {
+            "product_id": int(product_id),
+            "collection_id": int(collection_id)
+        }
+    }
+
+    ok, msg, _ = shopify_post(f"{BASE}/collects.json", payload, timeout=25)
+
+    if not ok:
+        log(f"  ❌ Koleksiyona eklenemedi ({collection_title}): {msg}", "ERROR")
+        return False
+
+    return True
+
+
+def add_product_to_collections(
+    product_id: int,
+    filter_type: str,
+    vehicles: Dict[str, List[str]],
+    collections_map: Dict[str, int]
+) -> None:
+    """
+    Ürünü uygun koleksiyonlara ekle
+
+    1. Filtre tipine göre (Hava Filtresi, Yağ Filtresi, vb.)
+    2. Araç markalarına göre (Mercedes-Benz, Audi, vb.)
+
+    Args:
+        product_id: Shopify product ID
+        filter_type: "Hava filtresi", "Yağ filtresi", vb.
+        vehicles: {"AUDI": [...], "BMW": [...]}
+        collections_map: Mevcut koleksiyonlar
+    """
+    added_count = 0
+
+    # 1. FİLTRE TİPİ KOLEKSİYONU
+    if filter_type:
+        # Normalize et
+        filter_normalized = filter_type.strip()
+
+        # Olası koleksiyon isimleri
+        possible_names = [
+            filter_normalized,  # "Hava filtresi"
+            filter_normalized.title(),  # "Hava Filtresi"
+            f"{filter_normalized.title()}",  # Tam eşleşme
+        ]
+
+        # Kabin hava filtresi özel durumu
+        if "polen" in filter_normalized.lower() or "kabin" in filter_normalized.lower():
+            possible_names.append("Kabin Hava Filtresi")
+
+        for coll_name in possible_names:
+            if coll_name in collections_map:
+                if add_product_to_collection_by_title(product_id, coll_name, collections_map):
+                    log(f"  ✓ Koleksiyona eklendi: {coll_name}")
+                    added_count += 1
+                    time.sleep(0.2)
+                break
+
+    # 2. ARAÇ MARKA KOLEKSİYONLARI
+    if vehicles:
+        for brand_raw in vehicles.keys():
+            brand_upper = brand_raw.upper().strip()
+            brand_normalized = format_brand_title_case(brand_raw)
+
+            # Olası koleksiyon isimleri - geniş liste
+            possible_names = [
+                brand_raw,                   # "MERCEDES-BENZ"
+                brand_normalized,            # "Mercedes-Benz"
+                brand_raw.title(),           # "Mercedes-Benz"
+                brand_raw.capitalize(),      # "Mercedes-benz"
+            ]
+
+            # Özel durum eşlemeleri
+            BRAND_ALIASES = {
+                "VW":               ["VW", "Volkswagen"],
+                "VOLKSWAGEN":       ["VW", "Volkswagen"],
+                "MERCEDES-BENZ":    ["Mercedes-Benz", "Mercedes Benz", "Mercedes"],
+                "SSANGYONG":        ["SsangYong", "Ssangyong", "SSANGYONG"],
+                "KIA MOTORS":       ["KIA Motors", "Kia Motors", "KIA", "Kia"],
+                "LANDROVER":        ["Land Rover", "LandRover", "Landrover"],
+                "LAND ROVER":       ["Land Rover", "LandRover"],
+                "VOLVO CARS":       ["Volvo Cars", "Volvo"],
+                "ROLLS-ROYCE":      ["Rolls-Royce", "Rolls Royce"],
+                "BMW ALPINA":       ["BMW Alpina", "Alpina"],
+                "DS AUTOMOBILES":   ["DS Automobiles", "DS"],
+                "CHEVROLET EUROPE": ["Chevrolet"],
+                "FSO MOTOR":        ["FSO Motor", "FSO"],
+                "UZ-DAEWOO":        ["Uz-Daewoo", "Uz Daewoo"],
+                "VAUXHALL-BEDFORD": ["Vauxhall-Bedford", "Vauxhall Bedford"],
+            }
+
+            if brand_upper in BRAND_ALIASES:
+                possible_names.extend(BRAND_ALIASES[brand_upper])
+
+            # Deduplicate koruyarak sırala
+            seen_p = set()
+            unique_names = []
+            for n in possible_names:
+                if n and n not in seen_p:
+                    seen_p.add(n)
+                    unique_names.append(n)
+
+            matched = False
+            for coll_name in unique_names:
+                if coll_name in collections_map:
+                    if add_product_to_collection_by_title(product_id, coll_name, collections_map):
+                        log(f"  ✓ Koleksiyona eklendi: {coll_name} (kaynak={brand_raw})")
+                        added_count += 1
+                        time.sleep(0.2)
+                    matched = True
+                    break
+
+            if not matched:
+                log(f"  ⚠ Koleksiyon bulunamadı: {brand_raw} → denendi={unique_names[:4]}", "WARN")
+
+    if added_count > 0:
+        log(f"  ✅ Toplam {added_count} koleksiyona eklendi")
+    else:
+        log(f"  ⚠ Hiçbir araç koleksiyonuna eklenemedi", "WARN")
+
+
+# =============================================================================
+# ALLOWED VEHICLE BRANDS (MANN API için)
+# =============================================================================
+
+ALLOWED_VEHICLE_BRANDS = {
+    "ALFA ROMEO", "ARO", "ASKAM", "ASTON", "AUDI", "BELLIER", "BENTLEY", "BESTURN",
+    "BMW", "BMW ALPINA", "BOGDAN", "BRILLANCE", "BUICK", "BYD", "CADILLAC", "CHANGAN",
+    "CHERY", "CHEVROLET", "CHEVROLET EUROPE", "CHRYSLER", "CITROEN", "CUPRA", "DACIA",
+    "DAEWOO", "DAIHATSU", "DATSUN", "DERWAYS", "DODGE", "DS AUTOMOBILES", "ELARIS",
+    "EXEED", "FERRARI", "FIAT", "FORD", "FSD", "FSM", "FSO MOTOR", "GEELY",
+    "GENERAL MOTORS", "GENESIS", "GREAT WALL", "GRECAV", "HAFEI", "HAVAL", "HOLDEN",
+    "HONDA", "HYUNDAI", "INFINITI", "INNOCENTI", "ISUZU", "IVECO", "IZH", "JAC",
+    "JAGUAR", "JEEP", "KIA MOTORS", "KTM", "LADA", "LAMBORGHINI", "LANCIA", "LANDROVER",
+    "LDV", "LEXUS", "LIGIER", "LOONDON TAXI INTERNATIONAL", "LOTUS", "MASERATI", "MAZDA",
+    "MEGA", "MERCEDES-BENZ", "MG", "MICROCAR", "MINI", "MITSUBISHI", "MORGAN", "NISSAN",
+    "OLDSMOBILE", "OPEL", "PERODUA", "PEUGEOT", "PIAGGIO", "PONTIAC", "PORSCHE", "PROTON",
+    "RAVON", "RENAULT", "ROLLS-ROYCE", "ROVER", "SAAB", "SANTANA", "SATURN", "SEAT",
+    "SKODA", "SMART", "SSANGYONG", "SUBARU", "SUZUKI", "TAGAZ", "TATA", "TESLA",
+    "TOYOTA", "UAZ", "UZ-DAEWOO", "VAUXHALL", "VAUXHALL-BEDFORD", "VOLGA", "VOLVO CARS",
+    "VW", "WIESMANN", "ZASTAVA", "ZAZ",
+}
+
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+def log(msg: str, level: str = "INFO") -> None:
+    line = f"[{datetime.now().strftime('%H:%M:%S')}] [{level}] {msg}"
+    print(line, flush=True)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+    except Exception:
+        pass
+
+
+# =============================================================================
+# ENV CHECK
+# =============================================================================
+
+if not SHOPIFY_TOKEN:
+    log("❌ SHOPIFY_TOKEN boş!", "ERROR")
+    raise SystemExit(1)
+
+if not OPENAI_API_KEY:
+    log("❌ OPENAI_API_KEY boş!", "ERROR")
+    raise SystemExit(1)
+
+BASE = f"https://{SHOP_SUBDOMAIN}.myshopify.com/admin/api/{API_VERSION}"
+HEADERS = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
+def normalize_sku(sku: str) -> str:
+    if not sku:
+        return ""
+    return re.sub(r'[\s/]', '', str(sku).upper())
+
+
+def slugify_tr(text: str) -> str:
+    tr_map = {
+        'ı': 'i', 'İ': 'i', 'ğ': 'g', 'Ğ': 'g', 'ü': 'u', 'Ü': 'u',
+        'ş': 's', 'Ş': 's', 'ö': 'o', 'Ö': 'o', 'ç': 'c', 'Ç': 'c',
+    }
+    for tr_char, en_char in tr_map.items():
+        text = text.replace(tr_char, en_char)
+
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9]+', '-', text)
+    text = re.sub(r'-+', '-', text)
+    return text.strip('-')
+
+
+def parse_price(price_str: str) -> float:
+    if not price_str:
+        return 0.0
+    try:
+        cleaned = str(price_str).replace('.', '').replace(',', '.')
+        return float(cleaned)
+    except:
+        return 0.0
+
+
+def format_brand_title_case(brand: str) -> str:
+    brand = brand.strip()
+
+    if "(" in brand:
+        brand = brand.split("(")[0].strip()
+
+    if "-" in brand:
+        parts = brand.split("-")
+        return "-".join(p.title() for p in parts)
+
+    if " " in brand:
+        return " ".join(p.title() for p in brand.split())
+
+    if len(brand) <= 3 and brand.isupper():
+        return brand
+
+    return brand.title()
+
+
+# =============================================================================
+# UFI CROSS-REFERENCE
+# =============================================================================
+
+def load_ufi_cross_reference() -> Dict[str, List[Dict[str, str]]]:
+    log("📂 UFI cross-reference yükleniyor...")
+
+    cross_ref_map = defaultdict(list)
+    mann_master_map = {}
+
+    try:
+        with open(UFI_CROSS_REF_PATH, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+
+            for row in reader:
+                brand = row.get('Brand', '').strip()
+                part_code = row.get('Part_Code', '').strip()
+                master_id = row.get('Master_ID', '').strip()
+                is_master = row.get('Is_Master', '').strip().upper()
+
+                if brand in ['MANN+HUMMEL', 'MANN-FILTER'] and is_master == 'EVET':
+                    mann_code_normalized = normalize_sku(part_code)
+                    if master_id:
+                        mann_master_map[master_id] = mann_code_normalized
+
+                if master_id and is_master == 'HAYIR' and brand and part_code:
+                    cross_ref_map[master_id].append({
+                        'brand': brand,
+                        'code': part_code
+                    })
+
+        final_map = defaultdict(list)
+        for master_id, equivalents in cross_ref_map.items():
+            mann_code = mann_master_map.get(master_id)
+            if mann_code:
+                final_map[mann_code] = equivalents
+
+        log(f"✅ UFI cross-reference yüklendi: {len(final_map)} MANN kodu")
+        return dict(final_map)
+
+    except Exception as e:
+        log(f"❌ UFI yüklenemedi: {e}", "ERROR")
+        return {}
+
+
+# =============================================================================
+# SHOPIFY - SKU INDEX
+# =============================================================================
+
+def shopify_get(url: str, params: Optional[dict] = None, timeout: int = 25) -> Optional[dict]:
+    try:
+        r = requests.get(url, headers=HEADERS, params=params, timeout=timeout)
+        if r.status_code != 200:
+            log(f"Shopify GET {r.status_code}", "ERROR")
+            return None
+        return r.json()
+    except Exception as e:
+        log(f"Shopify GET error: {e}", "ERROR")
+        return None
+
+
+def shopify_post(url: str, payload: dict, timeout: int = 25) -> Tuple[bool, str, Optional[dict]]:
+    try:
+        r = requests.post(url, headers=HEADERS, json=payload, timeout=timeout)
+        if r.status_code in (200, 201):
+            return True, f"{r.status_code} OK", r.json()
+        return False, f"{r.status_code}", None
+    except Exception as e:
+        return False, f"EXC {e}", None
+
+
+def shopify_put(url: str, payload: dict, timeout: int = 25) -> Tuple[bool, str]:
+    try:
+        r = requests.put(url, headers=HEADERS, json=payload, timeout=timeout)
+        if r.status_code == 200:
+            return True, "200 OK"
+        return False, f"{r.status_code}"
+    except Exception as e:
+        return False, f"EXC {e}"
+
+
+def load_all_products_since_id() -> List[dict]:
+    all_products = []
+    since_id = 0
+    log("📦 Shopify ürünleri yükleniyor (SKU index için)...")
+
+    while True:
+        url = f"{BASE}/products.json"
+        params = {"limit": 250, "since_id": since_id}
+        data = shopify_get(url, params=params, timeout=30)
+
+        if not data:
+            break
+
+        products = data.get("products", [])
+        if not products:
+            break
+
+        all_products.extend(products)
+        since_id = products[-1]["id"]
+        log(f"  ✓ +{len(products)} | Toplam: {len(all_products)}")
+        time.sleep(0.35)
+
+    log(f"✅ {len(all_products)} ürün yüklendi")
+    return all_products
+
+
+def build_sku_index(products: List[dict]) -> Dict[str, dict]:
+    idx = {}
+    for p in products:
+        pid = p.get("id")
+        title = p.get("title", "")
+
+        for v in p.get("variants", []):
+            raw_sku = v.get("sku")
+            sku_norm = normalize_sku(raw_sku or "")
+
+            if not sku_norm:
+                continue
+
+            if sku_norm not in idx:
+                idx[sku_norm] = {
+                    "product_id": int(pid),
+                    "variant_id": int(v.get("id")),
+                    "inventory_item_id": int(v.get("inventory_item_id")) if v.get("inventory_item_id") else None,
+                    "title": title,
+                }
+
+    log(f"✅ SKU index: {len(idx)} SKU")
+    return idx
+
+
+def get_primary_location_id() -> Optional[int]:
+    data = shopify_get(f"{BASE}/locations.json", timeout=25)
+    if not data:
+        return None
+
+    locs = data.get("locations", [])
+    for l in locs:
+        if l.get("active", True):
+            return int(l.get("id"))
+
+    if locs:
+        return int(locs[0].get("id"))
+
+    return None
+
+
+def set_inventory_available(inventory_item_id: int, location_id: int, available: int) -> bool:
+    url = f"{BASE}/inventory_levels/set.json"
+    payload = {
+        "location_id": location_id,
+        "inventory_item_id": inventory_item_id,
+        "available": int(available),
+    }
+
+    if DRY_RUN:
+        return True
+
+    ok, msg, _ = shopify_post(url, payload, timeout=25)
+    if not ok:
+        log(f"Inventory set failed: {msg}", "ERROR")
+    return ok
+
+
+def create_product_mann(mann_code: str, title: str, filter_type: str, price: float, image_urls: List[str]) -> Optional[dict]:
+    if DRY_RUN:
+        return {
+            "product": {
+                "id": 999999,
+                "variants": [{"id": 888888, "inventory_item_id": 777777}]
+            }
+        }
+
+    images_payload = [{"src": url} for url in image_urls if url]
+
+    payload = {
+        "product": {
+            "title": title,
+            "vendor": "MANN",  # MANN-FILTER → MANN
+            "product_type": filter_type or "Otomotiv Filtresi",
+            "status": CREATE_STATUS,
+            "images": images_payload[:10],
+            "variants": [
+                {
+                    "sku": mann_code,
+                    "price": f"{price:.2f}",
+                    "inventory_management": "shopify",
+                    "inventory_policy": "deny",
+                }
+            ]
+        }
+    }
+
+    ok, msg, resp = shopify_post(f"{BASE}/products.json", payload, timeout=30)
+
+    if not ok or not resp:
+        log(f"❌ Product create failed: {msg}", "ERROR")
+        return None
+
+    return resp
+
+
+def update_variant_price_sku(variant_id: int, sku: str, price: float) -> bool:
+    if DRY_RUN:
+        return True
+
+    payload = {
+        "variant": {
+            "id": variant_id,
+            "sku": sku,
+            "price": f"{price:.2f}"
+        }
+    }
+
+    ok, msg = shopify_put(f"{BASE}/variants/{variant_id}.json", payload, timeout=25)
+    if not ok:
+        log(f"Variant update failed: {msg}", "ERROR")
+    return ok
+
+
+def upsert_metafield(product_id: int, namespace: str, key: str, type_: str, value: str) -> bool:
+    if DRY_RUN:
+        return True
+
+    payload = {
+        "metafield": {
+            "namespace": namespace,
+            "key": key,
+            "type": type_,
+            "value": value
+        }
+    }
+
+    url = f"{BASE}/products/{product_id}/metafields.json"
+    ok, _, _ = shopify_post(url, payload)
+    return ok
+
+
+def update_product_images(product_id: int, image_urls: List[str]) -> bool:
+    if not image_urls or DRY_RUN:
+        return True
+
+    data = shopify_get(f"{BASE}/products/{product_id}/images.json")
+    if data and data.get('images'):
+        for img in data['images']:
+            requests.delete(f"{BASE}/products/{product_id}/images/{img['id']}.json", headers=HEADERS)
+
+    for url in image_urls[:10]:
+        if url and url.startswith('http'):
+            payload = {"image": {"src": url}}
+            shopify_post(f"{BASE}/products/{product_id}/images.json", payload)
+            time.sleep(0.3)
+
+    return True
+
+
+def set_product_handle_safe(product_id: int, desired_handle: str, sku: str) -> bool:
+    if DRY_RUN:
+        return True
+
+    base = slugify_tr(desired_handle)
+    sku_suf = normalize_sku(sku).lower()
+
+    candidates = [base, f"{base}-{sku_suf}", f"{base}-{sku_suf}-2"]
+
+    for h in candidates:
+        payload = {"product": {"id": int(product_id), "handle": h}}
+        ok, msg = shopify_put(f"{BASE}/products/{product_id}.json", payload, timeout=25)
+
+        if ok:
+            log(f"  ✅ Handle: {h}")
+            return True
+
+        low = (msg or "").lower()
+        if "handle" in low and ("taken" in low or "already been" in low):
+            continue
+
+        return False
+
+    return False
+
+
+# =============================================================================
+# MANN API
+# =============================================================================
+
+def mann_scrape_fitment_from_url(mann_url: str) -> Dict[str, List[str]]:
+    log(f"  🔍 MANN API: Araç bilgileri...")
+
+    try:
+        r = requests.get(mann_url, headers=UA_HEADERS, timeout=25)
+        if r.status_code != 200:
+            return {}
+        html = r.text
+    except:
+        return {}
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    def clean(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").strip())
+
+    apps_head = None
+    for tag in soup.find_all(["h2", "h3", "h4"]):
+        t = clean(tag.get_text(" ", strip=True))
+        if "Araçlar / Uygulamalar" in t:
+            apps_head = tag
+            break
+
+    if not apps_head:
+        return {}
+
+    stop_markers = ("OE Numaraları", "İndirilebilir Dosyalar")
+
+    def normalize_brand_heading(txt: str) -> Optional[str]:
+        s = clean(txt)
+        if not s:
+            return None
+        up = s.upper()
+        base = up.split("(")[0].strip() if "(" in up else up
+
+        if up in ALLOWED_VEHICLE_BRANDS:
+            return up
+        if base in ALLOWED_VEHICLE_BRANDS:
+            return base
+
+        if "VOLKSWAGEN" in up or up.startswith("VW"):
+            return "VW"
+        if up == "VOLVO":
+            return "VOLVO CARS"
+
+        return None
+
+    vehicles = defaultdict(list)
+    current_brand = None
+    seen = set()
+
+    for tag in apps_head.find_all_next(["h2", "h3", "h4", "h5"]):
+        t = clean(tag.get_text(" ", strip=True))
+        if not t:
+            continue
+        if any(m in t for m in stop_markers):
+            break
+
+        norm_brand = normalize_brand_heading(t)
+        if norm_brand:
+            current_brand = norm_brand
+            continue
+
+        if current_brand:
+            model = t.strip()
+            key = (current_brand.lower(), model.lower())
+            if key not in seen:
+                seen.add(key)
+                vehicles[current_brand].append(model)
+
+    log(f"  ✓ {len(vehicles)} marka, {sum(len(v) for v in vehicles.values())} model")
+    return dict(vehicles)
+
+
+# =============================================================================
+# TITLE & META BUILDERS
+# =============================================================================
+
+def shorten_brand_name(brand: str) -> str:
+    brand_shortcuts = {
+        "Mercedes-Benz": "Mercedes",
+        "Volkswagen": "VW",
+        "Alfa Romeo": "Alfa",
+        "Chevrolet": "Chevy",
+    }
+    return brand_shortcuts.get(brand, brand)
+
+
+def get_top_vehicles_for_title(vehicles: Dict[str, List[str]], limit: int = 3) -> List[Tuple[str, str]]:
+    if not vehicles:
+        return []
+
+    brand_map = {
+        "VW": "VW",
+        "VOLKSWAGEN": "VW",
+        "MERCEDES-BENZ": "Mercedes",
+        "BMW": "BMW",
+        "AUDI": "Audi",
+        "FORD": "Ford",
+        "VOLVO CARS": "Volvo",
+        "OPEL": "Opel",
+        "RENAULT": "Renault",
+        "PEUGEOT": "Peugeot",
+        "FIAT": "Fiat",
+        "TOYOTA": "Toyota",
+        "KIA MOTORS": "Kia",
+    }
+
+    sorted_brands = sorted(vehicles.items(), key=lambda x: len(x[1]), reverse=True)
+
+    result = []
+    for brand_raw, models in sorted_brands[:limit]:
+        brand_short = brand_map.get(brand_raw, shorten_brand_name(format_brand_title_case(brand_raw)))
+
+        if models:
+            model = models[0]
+            model_clean = model.split("(")[0].strip()
+            model_short = model_clean[:15] if len(model_clean) > 15 else model_clean
+
+            result.append((brand_short, model_short))
+
+    return result
+
+
+def make_mann_title(mann_code: str, filter_type: str, vehicles: Dict[str, List[str]], max_len: int = 70) -> str:
+    type_map = {
+        "Hava filtresi": "Hava Filtresi",
+        "Yağ filtresi": "Yağ Filtresi",
+        "Yakıt filtresi": "Yakıt Filtresi",
+        "Polen filtresi": "Polen Filtresi",
+    }
+    type_full = type_map.get(filter_type, filter_type or "Filtre")
+
+    base = f"MANN-FILTER {mann_code} {type_full}"
+
+    top_vehicles = get_top_vehicles_for_title(vehicles, limit=3)
+
+    if not top_vehicles:
+        return base[:max_len]
+
+    # STRATEJI 1: 3 Marka + Model
+    if len(top_vehicles) >= 3:
+        vehicle_text = f"{top_vehicles[0][0]} {top_vehicles[0][1]}, {top_vehicles[1][0]} {top_vehicles[1][1]}, {top_vehicles[2][0]} {top_vehicles[2][1]}"
+        title = f"{base} | {vehicle_text}"
+        if len(title) <= max_len:
+            return title
+
+    # STRATEJI 2: 2 Marka + Model
+    if len(top_vehicles) >= 2:
+        vehicle_text = f"{top_vehicles[0][0]} {top_vehicles[0][1]}, {top_vehicles[1][0]} {top_vehicles[1][1]}"
+        title = f"{base} | {vehicle_text}"
+        if len(title) <= max_len:
+            return title
+
+    # STRATEJI 3: 1 Marka + Model
+    vehicle_text = f"{top_vehicles[0][0]} {top_vehicles[0][1]}"
+    title = f"{base} | {vehicle_text}"
+    if len(title) <= max_len:
+        return title
+
+    # STRATEJI 4: Sadece 1 Marka (Model kaldır) ← YENİ KURAL
+    title = f"{base} | {top_vehicles[0][0]}"
+    if len(title) <= max_len:
+        return title
+
+    # STRATEJI 5: 3 Marka (Model yok)
+    if len(top_vehicles) >= 3:
+        vehicle_text = f"{top_vehicles[0][0]}, {top_vehicles[1][0]}, {top_vehicles[2][0]}"
+        title = f"{base} | {vehicle_text}"
+        if len(title) <= max_len:
+            return title
+
+    # STRATEJI 6: 2 Marka (Model yok)
+    if len(top_vehicles) >= 2:
+        vehicle_text = f"{top_vehicles[0][0]}, {top_vehicles[1][0]}"
+        title = f"{base} | {vehicle_text}"
+        if len(title) <= max_len:
+            return title
+
+    # STRATEJI 7: Tip kısalt + 1 Marka
+    type_short = type_full.replace(" Filtresi", "")
+    base_short = f"MANN-FILTER {mann_code} {type_short}"
+    title = f"{base_short} | {top_vehicles[0][0]}"
+    if len(title) <= max_len:
+        return title
+
+    # Son çare: Sadece base
+    return base[:max_len].rstrip(" -|/")
+
+
+def build_meta_description_mann(mann_code: str, filter_type: str, vehicles: Dict[str, List[str]], index: int) -> str:
+    """
+    RANDOM meta templates - SADECE verilen 30 element
+    Her ürün için 3-4 element random seçilir
+    MİNİMUM 145 KARAKTER garantili
+    KURAL: %100 ifadesi her metada maksimum 1 kez
+    """
+    import random
+
+    # SADECE VERİLEN 30 ELEMENT - BAŞKA BİŞEY EKLEME!
+    elements = [
+        "📋 Şase No ile parça doğrulama",
+        "🚚 48 Saatte kargoda",
+        "✅ Yetkili distribütör faturalı",
+        "📦 2-5 İş günü teslimat",
+        "🔒 Güvenli ödeme sistemi",
+        "📋 Şase No ile %100 tam uyum kontrolü",
+        "✅ %100 Orijinal parça garantisi",
+        "🔁 Kolay iade ve değişim garantisi",
+        "🛡️ Yetkili distribütör güvencesiyle faturalı satış",
+        "🚚 48 Saatte hızlı gönderim",
+        "📋 Uzman ekipten şase no sorgulama desteği",
+        "📦 Tahmini 2-5 iş günü içinde adrese teslimat",
+        "✅ Orijinal kalite ve yüksek performans",
+        "🔒 Güvenli ödeme altyapısı",
+        "📋 Aracınıza özel parça teyidi",
+        "🚚 48 Saatte kargoya teslim edilir",
+        "✅ Sadece yetkili distribütör ürünleri",
+        "📦 Şehir içi ve şehir dışı hızlı teslimat",
+        "🔁 Koşulsuz iade garantisi",
+        "📋 Yanlış parçaya son! Şase ile doğrulama yapıyoruz",
+        "✅ Orijinal yedek parça ve faturalı gönderim",
+        "🚚 Siparişiniz 48 saatte kargo firmasına verilir",
+        "🔒 3D Secure güvenli ödeme seçeneği",
+        "📦 2-5 İş günü sürecek profesyonel lojistik süreci",
+        "✅ Filtre grubunda dünya markası kalitesi",
+        "📋 Şase numaranız ile birebir uyumlu ürün tespiti",
+        "🚚 Hızlı paketleme ve 48 saatte kargo çıkışı",
+        "✅ Distribütör onaylı ve faturalı orijinal ürün",
+        "🔁 14 Gün içinde kolay ve şeffaf iade süreci",
+        "📋 Teknik destek ekibimizden şase no ile parça onayı",
+    ]
+
+    # Index'e göre seed belirle (her ürün için tutarlı olsun)
+    random.seed(index)
+
+    # Elementleri shuffle et
+    shuffled = elements.copy()
+    random.shuffle(shuffled)
+
+    # %100 içeren ve içermeyen elementleri ayır
+    elements_with_100 = [e for e in shuffled if "%100" in e]
+    elements_without_100 = [e for e in shuffled if "%100" not in e]
+
+    # KURAL: %100 maksimum 1 kez
+    # 1. %100 içeren elementlerden 0 veya 1 tane seç
+    has_100 = random.choice([True, False])
+
+    if has_100 and elements_with_100:
+        # 1 tane %100'lü element + 2-3 tane %100'süz element
+        selected = [random.choice(elements_with_100)]
+        num_more = 2 if len(f"MANN-FILTER {mann_code} {filter_type}") > 40 else 3
+        selected.extend(random.sample(elements_without_100, min(num_more, len(elements_without_100))))
+    else:
+        # Sadece %100'süz elementler (3-4 tane)
+        num_elements = 3 if len(f"MANN-FILTER {mann_code} {filter_type}") > 40 else 4
+        selected = random.sample(elements_without_100, min(num_elements, len(elements_without_100)))
+
+    # Meta oluştur
+    base = f"MANN-FILTER {mann_code} {filter_type}."
+    meta = f"{base} {' '.join(selected)}"
+
+    # 160 karakter limiti kontrol
+    if len(meta) > 160:
+        # Son elementi kaldır
+        if len(selected) > 3:
+            selected = selected[:3]
+            meta = f"{base} {' '.join(selected)}"
+
+        # Hala uzunsa kırp
+        if len(meta) > 160:
+            truncated = meta[:157]
+            last_space = truncated.rfind(' ')
+            if last_space > 145:  # Min 145 karakter korunuyor
+                meta = truncated[:last_space] + "..."
+            else:
+                meta = truncated + "..."
+
+    # Minimum 145 karakter kontrolü
+    if len(meta) < 145:
+        # Bir element daha ekle (%100 kuralına uyarak)
+        remaining = [e for e in elements_without_100 if e not in selected]
+
+        # Eğer zaten %100 varsa, sadece %100'süz ekle
+        has_100_already = any("%100" in e for e in selected)
+        if has_100_already:
+            remaining = [e for e in remaining if "%100" not in e]
+
+        if remaining:
+            extra = random.choice(remaining)
+            test_meta = f"{base} {' '.join(selected)} {extra}"
+            if len(test_meta) <= 160:
+                meta = test_meta
+
+    return meta
+
+
+def build_tags_csv_mann(mann_code: str, filter_type: str, equivalents: List[Dict[str, str]]) -> str:
+    """
+    Tags - SADECE 6 önemli marka
+    """
+    tags = [mann_code.strip()]
+
+    if filter_type:
+        tags.append(filter_type.strip())
+
+    tags.append("MANN-FILTER")
+
+    important_brands = [
+        ("HENGST", ["HENGST"]),
+        ("BOSCH", ["BOSCH"]),
+        ("MAHLE", ["MAHLE", "KNECHT-MAHLE", "KNECHT"]),
+        ("FILTRON", ["FILTRON"]),
+        ("PURFLUX", ["PURFLUX"]),
+        ("UFI", ["UFI FILTERS", "UFI"]),
+    ]
+
+    for brand_name, brand_variants in important_brands:
+        eq = None
+        for variant in brand_variants:
+            eq = next((e for e in equivalents if variant.upper() in e['brand'].upper()), None)
+            if eq:
+                break
+
+        if eq:
+            tags.append(f"{brand_name} {eq['code']}")
+
+    seen = set()
+    out = []
+    for t in tags:
+        t2 = t.strip()
+        if not t2:
+            continue
+        k = t2.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(t2)
+
+    return ", ".join(out)
+
+
+# =============================================================================
+# HTML BUILDER (MAHLE MASTER TEMPLATE)
+# =============================================================================
+
+def build_equivalent_brands_html_table(equivalents: List[Dict[str, str]]) -> str:
+    """Eşdeğer kodlar tablosu - SADECE 6 önemli marka"""
+    if not equivalents:
+        return ""
+
+    important_brand_filters = [
+        ("HENGST", ["HENGST"]),
+        ("BOSCH", ["BOSCH"]),
+        ("MAHLE", ["MAHLE", "KNECHT-MAHLE", "KNECHT"]),
+        ("FILTRON", ["FILTRON"]),
+        ("PURFLUX", ["PURFLUX"]),
+        ("UFI FILTERS", ["UFI FILTERS", "UFI"]),
+    ]
+
+    important_equivalents = []
+    seen_brands = set()
+
+    for brand_name, brand_variants in important_brand_filters:
+        if brand_name in seen_brands:
+            continue
+
+        for eq in equivalents:
+            eq_brand_upper = eq['brand'].upper()
+
+            for variant in brand_variants:
+                if variant.upper() in eq_brand_upper:
+                    important_equivalents.append({
+                        'brand': brand_name,
+                        'code': eq['code']
+                    })
+                    seen_brands.add(brand_name)
+                    break
+
+            if brand_name in seen_brands:
+                break
+
+    if not important_equivalents:
+        return ""
+
+    html = []
+    html.append("<h3>🔄 Eşdeğer Filtre Kodları</h3>")
+    html.append('<table style="width:100%;border-collapse:collapse;margin:10px 0;">')
+    html.append('  <tr style="background:#f8f9fa;">')
+    html.append('    <td style="padding:8px;border:1px solid #dee2e6;"><strong>Marka</strong></td>')
+    html.append('    <td style="padding:8px;border:1px solid #dee2e6;"><strong>Kod</strong></td>')
+    html.append('  </tr>')
+
+    for eq in important_equivalents:
+        html.append('  <tr>')
+        html.append(f'    <td style="padding:8px;border:1px solid #dee2e6;">{eq["brand"]}</td>')
+        html.append(f'    <td style="padding:8px;border:1px solid #dee2e6;"><strong>{eq["code"]}</strong></td>')
+        html.append('  </tr>')
+
+    html.append('</table>')
+
+    return "\n".join(html)
+
+
+def build_fitment_html_mahle_style(vehicles: Dict[str, List[str]]) -> str:
+    """Araç uyumlulukları - MAHLE style (border-left div)"""
+    if not vehicles:
+        return ""
+
+    html = []
+    shown = 0
+
+    for brand, models in vehicles.items():
+        if shown >= BODY_MAX_TOTAL_MODELS:
+            break
+
+        brand_display = format_brand_title_case(brand)
+
+        take = models[:BODY_MAX_MODELS_PER_BRAND]
+
+        html.append(f'<div style="border-left: 4px solid #28a745; padding-left: 10px; margin: 10px 0;">')
+        html.append(f'<p>✅ <strong>{brand_display}:</strong><br>')
+
+        for m in take:
+            html.append(f'  • {m}<br>')
+            shown += 1
+            if shown >= BODY_MAX_TOTAL_MODELS:
+                break
+
+        html.append('</p></div>')
+
+    return "\n".join(html)
+
+
+def build_body_html_mann_mahle_template(
+    mann_code: str,
+    filter_type: str,
+    equivalents: List[Dict[str, str]],
+    vehicles: Dict[str, List[str]],
+    mann_url: str,
+    top_brand: Optional[str]
+) -> str:
+    """
+    MANN-FILTER için MAHLE MASTER TEMPLATE
+    - Dış link: Sadece MANN-FILTER (3 link → 1 link)
+    - Şase No ile Kontrol
+    - Eşdeğer bölümü eklendi
+    """
+    code_disp = mann_code.strip()
+    filter_disp = filter_type.strip() if filter_type else "Otomotiv Filtresi"
+    top_brand_disp = top_brand or "Çeşitli markalar"
+
+    total_models = sum(len(models) for models in vehicles.values())
+
+    # Platform cümlesi
+    platform_phrase = f"{top_brand_disp} platformlarında" if top_brand_disp != "Çeşitli markalar" else "seçili araç gruplarında"
+
+    fl = filter_disp.lower()
+    if "yağ" in fl:
+        protection_text = "motor yağındaki metal parçacık, kurum ve kirleticileri filtreleyerek yağın temiz kalmasına yardımcı olur"
+    elif "polen" in fl or "kabin" in fl:
+        protection_text = "kabin havasını polen, toz ve zararlı partiküllerden arındırarak sağlıklı sürüş ortamı sunar"
+    elif "yakıt" in fl:
+        protection_text = "yakıt sistemindeki kirleticileri filtreler ve motor performansını korur"
+    else:
+        protection_text = "motorunuzu toz ve zararlı partiküllere karşı korumaya yardımcı olur"
+
+    platform_p = f"<p>MANN-FILTER {code_disp} {filter_disp.lower()}, {platform_phrase} {protection_text}. Yüksek filtrasyon kapasitesi ile motor performansını destekler ve verim kaybı riskini azaltır.</p>"
+
+    intro_p = f"<p>MANN-FILTER {code_disp} {filter_disp.lower()}, aracınızın iç mekanında temiz ve sağlıklı bir hava akışı sağlamak için tasarlandı. Yüksek kaliteli malzemelerden üretilen bu filtre, dışarıdan gelen toz, polen ve diğer zararlı partiküllerin içeri girmesini engelleyerek sürüş konforunuzu artırır.</p>"
+
+    # Eşdeğer kod bilgisi
+    # HENGST eşdeğerini bul (varsa)
+    hengst_eq = next((eq for eq in equivalents if "HENGST" in eq['brand'].upper()), None)
+    mann_line = f"HENGST {hengst_eq['code']}" if hengst_eq else "-"
+
+    uyum_text = f"{top_brand_disp} (seçili {total_models} araç grubu)" if total_models else f"{top_brand_disp} (seçili 0 araç grubu)"
+
+    vehicles_block = build_fitment_html_mahle_style(vehicles)
+
+    # Eşdeğer kodlar bölümü
+    equivalents_table = build_equivalent_brands_html_table(equivalents)
+
+    safe_cta = "Hızlı kargo ve Güvenli alışverişle hemen sipariş verin."
+
+    wa_text = f"Merhaba,%20MANN-FILTER%20{code_disp}%20%C3%BCr%C3%BCn%C3%BC%20hakk%C4%B1nda%20bilgi%20almak%20istiyorum"
+    wa_url = f"https://wa.me/905363955525?text={wa_text}"
+
+    # Dış link: SADECE MANN-FILTER
+    mann_link_safe = mann_url or ""
+    mann_anchor = f'<a href="{mann_link_safe}" target="_blank" rel="nofollow noopener">MANN-FILTER</a>' if mann_link_safe else "MANN-FILTER"
+
+    return f"""<h2>MANN-FILTER {code_disp} {filter_disp}</h2>
+
+<!-- Quick Info Bar (Above the Fold) -->
+<div style="background:#f8f9fa;padding:15px;margin:15px 0;border-left:4px solid #28a745;">
+<ul style="margin:0;padding-left:15px;list-style:none;">
+  <li>✅ <strong>Uyumluluk:</strong> {uyum_text} – Şase No ile kontrol</li>
+  <li>✅ <strong>Eşdeğer Kod:</strong> {mann_line}</li>
+  <li>🚚 <strong>Hızlı Kargo</strong> – Aynı gün kargoya teslim</li>
+  <li>🔁 <strong>Kolay İade</strong> – Faturalı satış</li>
+</ul>
+</div>
+
+{platform_p}
+
+{intro_p}
+
+<h3>Neden MANN-FILTER {code_disp} Seçmelisiniz?</h3>
+<ul>
+  <li><strong>OEM Kalitesi:</strong> Orijinal ekipman standartlarında üretim</li>
+  <li><strong>Yüksek Filtrasyon:</strong> Motorunuzu toz, kir ve partiküllerden korur</li>
+  <li><strong>Hassas Uyum:</strong> {top_brand_disp} platformları için tasarlanmıştır</li>
+  <li><strong>Dayanıklılık:</strong> Zorlu koşullarda bile stabil performans</li>
+  <li><strong>Hızlı Kargo:</strong> Siparişleriniz özenle paketlenir ve hızla gönderilir</li>
+  <li><strong>Güvenli Alışveriş:</strong> Güvenli ödeme altyapısı ile sorunsuz işlem</li>
+</ul>
+
+<h3>Teknik Özellikler – {code_disp}</h3>
+<table style="width:100%;border-collapse:collapse;margin:10px 0;">
+  <tr style="background:#f8f9fa;">
+    <td style="padding:8px;border:1px solid #dee2e6;"><strong>Ürün Kodu</strong></td>
+    <td style="padding:8px;border:1px solid #dee2e6;">MANN-FILTER {code_disp}</td>
+  </tr>
+  <tr>
+    <td style="padding:8px;border:1px solid #dee2e6;"><strong>Filtre Tipi</strong></td>
+    <td style="padding:8px;border:1px solid #dee2e6;">{filter_disp}</td>
+  </tr>
+  <tr style="background:#f8f9fa;">
+    <td style="padding:8px;border:1px solid #dee2e6;"><strong>Marka</strong></td>
+    <td style="padding:8px;border:1px solid #dee2e6;">MANN-FILTER</td>
+  </tr>
+  <tr>
+    <td style="padding:8px;border:1px solid #dee2e6;"><strong>Eşdeğer (Muadil)</strong></td>
+    <td style="padding:8px;border:1px solid #dee2e6;"><strong>{mann_line}</strong></td>
+  </tr>
+  <tr style="background:#f8f9fa;">
+    <td style="padding:8px;border:1px solid #dee2e6;"><strong>Uyumluluk</strong></td>
+    <td style="padding:8px;border:1px solid #dee2e6;">Seçili {total_models} araç grubu (tam liste metafield'da)</td>
+  </tr>
+</table>
+
+{equivalents_table}
+
+<h3>Uyumlu Araç Modelleri</h3>
+<p><strong>MANN-FILTER {code_disp}</strong> şu araçlarla uyumludur:</p>
+{vehicles_block}
+
+<p style="background:#fff3cd;padding:10px;border-left:4px solid #ffc107;margin:15px 0;">
+<strong>📋 Not:</strong> Tam uyumluluk listesi ürün metafield'ında saklanır.
+Şase No ile uyumluluğu teyit edebilirsiniz.
+</p>
+
+<h3>Bakım ve Değişim Önerisi</h3>
+<p>
+{filter_disp}nin düzenli olarak değiştirilmesi motorun sağlıklı çalışması için kritik öneme sahiptir.
+Aracınızın kullanım kılavuzunda belirtilen bakım aralıklarına uyarak motorunuzun performansını koruyabilir
+ve olası arızaların önüne geçebilirsiniz.
+</p>
+
+<h3>Sık Sorulan Sorular</h3>
+
+<p><strong>❓ Bu ürün aracıma uyar mı?</strong><br>
+Şase No ile kontrol önerilir. Uyumluluk listesi {total_models} araç grubu kapsar.</p>
+
+<p><strong>❓ Muadil (eşdeğer) kodu nedir?</strong><br>
+{mann_line} (katalog eşleştirmesi).</p>
+
+<p><strong>❓ Ne zaman değiştirilmeli?</strong><br>
+Aracınızın kullanım kılavuzuna göre; genelde 15.000-30.000 km aralığında kontrol önerilir.</p>
+
+<p><strong>❓ Uyumluluk kaynağı nedir?</strong><br>
+Uyumluluk verileri {'<a href="' + mann_link_safe + '" target="_blank" rel="nofollow noopener">MANN-FILTER</a>' if mann_link_safe else 'MANN-FILTER'} veritabanı ile doğrulanmıştır.</p>
+
+<p><strong>❓ Kargo ve iade koşulları nedir?</strong><br>
+Aynı gün kargo, güvenli paketleme. Kolay iade süreci ve faturalı satış garantisi.</p>
+
+<div style="background:#d4edda;padding:15px;margin:20px 0;border:1px solid #c3e6cb;text-align:center;">
+<p style="margin:0;font-size:16px;"><strong>🛒 {safe_cta}</strong></p>
+<p style="margin:10px 0;font-size:14px;color:#155724;">
+Uyumluluktan emin değilseniz şase no ile kontrol için bize yazabilirsiniz.
+</p>
+<a href="{wa_url}" target="_blank" rel="noopener" style="display:inline-block;background:#25D366;color:#fff;padding:12px 24px;text-decoration:none;border-radius:8px;font-weight:bold;margin-top:10px;">
+💬 WhatsApp ile Uyumluluk Kontrolü
+</a>
+</div>
+
+<hr style="margin:20px 0;">
+<p style="font-size:12px;color:#6c757d;">
+<strong>Kaynak bilgileri:</strong><br>
+Uyumluluk Rehberi: {mann_anchor} veritabanı ile eşleştirilmiştir.<br>
+Bilgi Erişimi: Kapsamlı uyumluluk tablosu, ürün ek veri alanlarında saklanmaktadır.
+</p>"""
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+def main():
+    log("=" * 80)
+    log("🚀 MANN FILTER SEO ENRICHER V10 - COLLECTION INDEX")
+    log("=" * 80)
+    log(f"Input: {MANN_CSV_PATH}")
+    log(f"Cross-ref: {UFI_CROSS_REF_PATH}")
+    log(f"Fiyat çarpanı: {PRICE_MULTIPLIER}x")
+    log(f"Limit: {'TÜM ÜRÜNLER' if MAX_PRODUCTS >= 999999 else f'{MAX_PRODUCTS} ürün'}")
+    log(f"DRY RUN: {DRY_RUN}")
+    log("=" * 80)
+
+    ufi_cross_ref = load_ufi_cross_reference()
+
+    all_products = load_all_products_since_id()
+    sku_index = build_sku_index(all_products)
+
+    location_id = get_primary_location_id()
+    if not location_id:
+        log("❌ Location ID yok!", "ERROR")
+        return
+
+    log(f"✅ Location ID: {location_id}")
+
+    # KOLEKSİYON INDEX'İNİ YÜK (BAŞLANGIÇTA BİR KEZ)
+    collections_map = load_all_collections()
+
+    mann_products = []
+    try:
+        with open(MANN_CSV_PATH, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f, delimiter=';')
+            for row in reader:
+                mann_products.append(row)
+        log(f"✅ {len(mann_products)} MANN ürün yüklendi")
+    except Exception as e:
+        log(f"❌ CSV yüklenemedi: {e}", "ERROR")
+        return
+
+    _start = START_ROW
+    _end   = END_ROW if END_ROW > 0 else len(mann_products)
+    products_to_process = mann_products[_start:_end]
+    if MAX_PRODUCTS < 999999:
+        products_to_process = products_to_process[:MAX_PRODUCTS]
+
+    success = 0
+    failed = []
+
+    log(f"\n📦 Satır aralığı: {_start} → {_start + len(products_to_process) - 1}  |  Toplam: {len(products_to_process)} ürün\n")
+
+    with tqdm(total=len(products_to_process), desc="MANN Ürünler") as pbar:
+        for idx, row in enumerate(products_to_process, 1):
+            try:
+                mann_code_raw = row.get('Kod', '').strip()
+                filter_type = row.get('Kategori', '').strip()
+                price_str = row.get('Fiyat', '0').strip()
+                stock_info = row.get('Toplam Stok', '0').strip()
+                mann_url = row.get('Mann_URL', '').strip()
+                img_url_1 = row.get('img_url_1', '').strip()
+                img_url_2 = row.get('img_url_2', '').strip()
+                img_url_3 = row.get('img_url_3', '').strip()
+
+                mann_code_normalized = normalize_sku(mann_code_raw)
+
+                if not mann_code_normalized:
+                    pbar.update(1)
+                    continue
+
+                pbar.set_postfix_str(f"SKU={mann_code_normalized}")
+
+                base_price = parse_price(price_str)
+                final_price = base_price * PRICE_MULTIPLIER
+
+                # STOK MANTIK
+                try:
+                    real_stock = int(stock_info) if stock_info.isdigit() else 0
+                except:
+                    real_stock = 0
+
+                if real_stock >= 5:
+                    stock_qty = 5
+                elif real_stock == 4:
+                    stock_qty = 3
+                elif real_stock == 3:
+                    stock_qty = 2
+                elif real_stock == 2:
+                    stock_qty = 1
+                elif real_stock == 1:
+                    stock_qty = 1
+                else:
+                    stock_qty = 0
+
+                image_urls = [url for url in [img_url_1, img_url_2, img_url_3] if url]
+
+                equivalents = ufi_cross_ref.get(mann_code_normalized, [])
+
+                vehicles = {}
+                if mann_url:
+                    vehicles = mann_scrape_fitment_from_url(mann_url)
+                    time.sleep(MANN_SLEEP)
+
+                log(f"\n[{idx}/{len(products_to_process)}] {mann_code_normalized}")
+                log(f"  Filtre: {filter_type}")
+                log(f"  Fiyat: {base_price:.2f} -> {final_price:.2f} TL")
+                log(f"  Stok: {real_stock} (gerçek) -> {stock_qty} (Shopify)")
+                log(f"  Eşdeğer: {len(equivalents)}")
+                log(f"  Araç: {len(vehicles)}")
+
+                title = make_mann_title(mann_code_raw, filter_type, vehicles, TITLE_MAX_LEN)
+                meta_desc = build_meta_description_mann(mann_code_raw, filter_type, vehicles, idx)
+                tags_csv = build_tags_csv_mann(mann_code_raw, filter_type, equivalents)
+
+                if DRY_RUN:
+                    log(f"[DRY_RUN]")
+                    log(f"  Title: {title} ({len(title)} char)")
+                    log(f"  Meta: {meta_desc} ({len(meta_desc)} char)")
+                    log(f"  Tags: {tags_csv}")
+                    success += 1
+                    pbar.update(1)
+                    continue
+
+                # SKU INDEX
+                product_id = None
+                variant_id = None
+                inventory_item_id = None
+                created_now = False
+
+                if mann_code_normalized in sku_index:
+                    sku_data = sku_index[mann_code_normalized]
+                    product_id = sku_data["product_id"]
+                    variant_id = sku_data["variant_id"]
+                    inventory_item_id = sku_data["inventory_item_id"]
+                    created_now = False
+                    log(f"  ✓ Ürün bulundu: ID={product_id}")
+                else:
+                    log(f"  ⚠ Yeni ürün oluşturuluyor...")
+                    resp = create_product_mann(mann_code_normalized, title, filter_type, final_price, image_urls)
+
+                    if not resp or not resp.get('product'):
+                        failed.append({"sku": mann_code_normalized, "error": "Create failed"})
+                        pbar.update(1)
+                        continue
+
+                    product_id = resp['product']['id']
+                    variant_id = resp['product']['variants'][0]['id']
+                    inventory_item_id = resp['product']['variants'][0].get('inventory_item_id')
+                    created_now = True
+
+                    sku_index[mann_code_normalized] = {
+                        "product_id": product_id,
+                        "variant_id": variant_id,
+                        "inventory_item_id": inventory_item_id,
+                        "title": title,
+                    }
+
+                # HTML - MAHLE STYLE
+                top_vehicles = get_top_vehicles_for_title(vehicles, limit=3)
+                top_brand = top_vehicles[0][0] if top_vehicles else None
+
+                body_html = build_body_html_mann_mahle_template(
+                    mann_code_raw,
+                    filter_type,
+                    equivalents,
+                    vehicles,
+                    mann_url,
+                    top_brand
+                )
+
+                # ÜRÜN GÜNCELLEMESİ
+                payload = {"product": {"id": product_id, "status": "active", "vendor": "MANN"}}  # VENDOR EKLE
+
+                if WRITE_PRODUCT_TITLE:
+                    payload["product"]["title"] = title
+
+                if WRITE_BODY_HTML:
+                    payload["product"]["body_html"] = body_html
+
+                if UPDATE_TAGS:
+                    payload["product"]["tags"] = tags_csv
+
+                ok, msg = shopify_put(f"{BASE}/products/{product_id}.json", payload, timeout=25)
+
+                if not ok:
+                    failed.append({"sku": mann_code_normalized, "error": msg})
+                    pbar.update(1)
+                    continue
+
+                if WRITE_META and meta_desc:
+                    upsert_metafield(product_id, "global", "description_tag", "single_line_text_field", meta_desc[:160])
+
+                if created_now and image_urls:
+                    update_product_images(product_id, image_urls)
+
+                if variant_id and UPDATE_PRICE:
+                    update_variant_price_sku(variant_id, mann_code_normalized, final_price)
+
+                if inventory_item_id and location_id:
+                    set_inventory_available(inventory_item_id, location_id, stock_qty)
+
+                if created_now:
+                    set_product_handle_safe(product_id, title, mann_code_normalized)
+
+                upsert_metafield(product_id, "custom", "oem_brand", "single_line_text_field", "MANN")  # MANN-FILTER → MANN
+                upsert_metafield(product_id, "custom", "oem_code", "single_line_text_field", mann_code_raw)
+                upsert_metafield(product_id, "custom", "google_mpn", "single_line_text_field", mann_code_normalized)
+
+                if equivalents:
+                    equiv_json = json.dumps(equivalents[:30], ensure_ascii=False)
+                    upsert_metafield(product_id, "custom", "equivalent_codes", "json", equiv_json)
+
+                if vehicles:
+                    fitment_json = json.dumps(vehicles, ensure_ascii=False)
+                    upsert_metafield(product_id, "custom", "fitment_json", "json", fitment_json)
+
+                    # KOLEKSİYONLARA EKLE (Filtre tipi + Araç markaları)
+                    log(f"  📁 Koleksiyonlara ekleniyor...")
+                    add_product_to_collections(product_id, filter_type, vehicles, collections_map)
+
+                success += 1
+                log(f"✅ {mann_code_normalized} {'oluşturuldu' if created_now else 'güncellendi'}!")
+
+                pbar.update(1)
+                time.sleep(SHOPIFY_SLEEP)
+                time.sleep(OPENAI_SLEEP)
+
+            except Exception as e:
+                msg = f"{type(e).__name__}: {e}"
+                log(f"❌ Hata: {msg}", "ERROR")
+                failed.append({"sku": mann_code_normalized if 'mann_code_normalized' in locals() else 'unknown', "error": msg})
+                pbar.update(1)
+
+    log("\n" + "=" * 80)
+    log(f"✅ Başarılı: {success}")
+    log(f"❌ Başarısız: {len(failed)}")
+    log("=" * 80)
+
+    if failed:
+        try:
+            with open(FAILED_FILE, "w", encoding="utf-8") as f:
+                json.dump(failed, f, indent=2, ensure_ascii=False)
+            log(f"Hatalar: {FAILED_FILE}", "WARN")
+        except Exception as e:
+            log(f"Hata dosyası yazılamadı: {e}", "ERROR")
+
+
+if __name__ == "__main__":
+    main()
