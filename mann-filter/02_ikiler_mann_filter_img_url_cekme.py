@@ -1267,8 +1267,10 @@ def patch_supabase_row(session: requests.Session, row: dict, category: str, prod
     payload = {}
     if category:
         payload["kategori"] = category
-    if product_url and not (row.get("mann_url") or "").strip():
-        payload["mann_url"] = product_url
+    if product_url:
+        current_url = (row.get("mann_url") or "").strip()
+        if product_url.strip() != current_url:
+            payload["mann_url"] = product_url
     for i in range(1, MAX_IMG + 1):
         key = f"img_url_{i}"
         if not (row.get(key) or "").strip() and i <= len(images):
