@@ -1,35 +1,25 @@
-# IKILER FILTRON
+# TWO
 
-FILTRON marka ürünleri için Supabase kaynaklı fiyat/stok, URL-görsel ve Shopify SEO senkronizasyon araçları.
+TWO, marka bazlı filtre otomasyonlarının tek ana reposudur.
 
-## Akış
+## Proje klasörleri
 
-1. `01_filtron_ikiler_supabase_fiyat_stok.py` — Supabase fiyat/stok güncelleme
-2. `02_filtron_ikiler_supabase_url_gorsel.py` — URL ve görsel güncelleme
-3. `03_filtron_supabase_shopify_seo.py` — Shopify SEO, fiyat ve stok senkronizasyonu
+| Klasör | İçerik | Durum |
+|---|---|---|
+| [`filtron/`](filtron/) | IKILER FILTRON Supabase, URL/görsel ve Shopify akışı | ✅ Aktif |
+| [`mann-filter/`](mann-filter/) | MANN-FILTER dosyaları için ayrılmış alan | 🟠 Yakında |
 
-`IKILER_FILTRON_create.sql` Supabase tablo ve indekslerini oluşturur.
+Her marka kendi klasöründe tutulur. Bir markanın Python dosyaları, SQL şeması, HTML arayüzü, bağımlılıkları ve README dosyası diğer markanın dosyalarına karışmaz.
 
-## Kurulum
+## FILTRON ile çalışma
 
 ```bash
+cd filtron
 python -m pip install -r requirements.txt
 ```
 
-## Gizli değişkenler
+Gizli değerler `.env`, cookie, CSV, log ve çalışma çıktıları olarak yerel tutulur; GitHub'a gönderilmez.
 
-Gizli değerleri `.env` veya işletim sistemi ortam değişkenlerinde tutun. `.env` Git'e dahil edilmez.
+## Gelecekte MANN-FILTER ekleme
 
-Gerekli değişkenler kullanılan araca göre değişir; tipik olarak:
-
-- `SUPABASE_URL`
-- `SUPABASE_KEY` veya `SUPABASE_SECRET_KEY`
-- `SHOP_SUBDOMAIN`
-- `SHOPIFY_TOKEN`
-- `OPENAI_API_KEY`
-
-Canlı Shopify işlemlerinden önce `DRY_RUN=1` ile kontrol edin.
-
-## Not
-
-Yerel çalışma çıktıları, CSV/veri dosyaları, loglar, cookie dosyaları ve yedek Python dosyaları güvenlik ve depo temizliği için GitHub'a gönderilmez.
+MANN-FILTER dosyaları yalnızca `mann-filter/` altına eklenmelidir. Ana repo ortak belgeler ve klasör yönlendirmesi için kullanılır; marka kodları birbirine karıştırılmaz.
