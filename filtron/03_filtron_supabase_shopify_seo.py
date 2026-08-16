@@ -287,9 +287,17 @@ ALLOWED_VEHICLE_BRANDS: set = {
 # ENV CHECK & LOGGING
 # =============================================================================
 
+def _redact_sensitive(value: object) -> str:
+    text = str(value)
+    for secret in (SUPABASE_KEY, SHOPIFY_TOKEN, OPENAI_API_KEY):
+        if secret and len(secret) >= 8:
+            text = text.replace(secret, "<REDACTED_SECRET>")
+    return text
+
+
 def log(msg: str, level: str = "INFO") -> None:
-    """Terminale ve log dosyasına zaman damgalı mesaj yazar. level: INFO/WARN/ERROR"""
-    line = f"[{datetime.now().strftime('%H:%M:%S')}] [{level}] {msg}"
+    """Terminale ve log dosyasına zaman damgalı mesaj yazar; secret değerlerini maskeler."""
+    line = f"[{datetime.now().strftime('%H:%M:%S')}] [{level}] {_redact_sensitive(msg)}"
     print(line, flush=True)
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -2795,8 +2803,23 @@ def main():
                         "step": "seo_structured_data", "product_id": product_id,
                         "error": reason,
                     })
+                    debug_step(
+                        sku=canonical_sku, external=external_code,
+                        step="seo_structured_data", status="error",
+                        product_id=product_id, error=reason,
+                    )
                     stats.mark_failed(canonical_sku, reason)
                     continue
+
+                log(
+                    f"{canonical_sku}: ✅ seo_structured_data yazıldı "
+                    f"| pid={product_id} | price={price} | stock={stock_qty}"
+                )
+                debug_step(
+                    sku=canonical_sku, external=external_code,
+                    step="seo_structured_data", status="ok",
+                    product_id=product_id, price=price, stock=stock_qty,
+                )
 
                 success += 1
                 debug_step(
