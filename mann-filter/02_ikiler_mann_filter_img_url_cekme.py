@@ -299,7 +299,7 @@ def load_done_codes_from_output() -> set:
 
 # ===================== CODE NORMALIZE =====================
 # Bilinen prefix'ler (uzundan kısaya sıralı - CF önce gelmeli)
-PREFIXES = ["CUK", "WDK", "CF", "CU", "HU", "PU", "TB", "WD", "WK", "W", "H", "C", "P"]
+PREFIXES = ["CUK", "WDK", "CF", "BF", "CU", "HU", "PU", "TB", "WD", "WK", "W", "H", "C", "P"]
 
 def strip_m_prefix(s: str) -> str:
     """'M.' veya 'M:' prefix'ini sil (örn: M.HU 718 → HU 718)"""
@@ -1224,7 +1224,8 @@ def code_from_product_url(product_url: str) -> str:
     """Mevcut MANN ürün URL'sinden görsel doğrulama için ürün kodu çıkar."""
     if not product_url:
         return ""
-    m = re.search(r"/urun\.html/([^/?#]+)", unquote(product_url), flags=re.IGNORECASE)
+    # Ürün slug'ında slash ürün kodunun parçasıdır: bf1018/1_mann-filter.html.
+    m = re.search(r"/urun\.html/([^?#]+)", unquote(product_url), flags=re.IGNORECASE)
     if not m:
         return ""
     slug = re.sub(r"_mann-filter.*$", "", m.group(1), flags=re.IGNORECASE)
@@ -1327,7 +1328,9 @@ def main():
             # Örn. kod=1005619501, mann_url=w7120_mann-filter.html.
             if existing_url and "/urun.html/" in existing_url:
                 product_url = existing_url
-                search_code = code_from_product_url(existing_url) or kod
+                # Supabase kodu geçerliyse boşluk/slash yapısını koru.
+                # Yalnızca numerik/dahili kodlarda URL'den gerçek kodu türet.
+                search_code = kod if is_valid_mann_catalog_code(kod) else code_from_product_url(existing_url)
                 log("INFO", f"[{idx}/{total}] Kayıtlı URL kullanılıyor; katalog araması yok | SKU={row.get('sku', '')} | KOD={kod}")
             elif not kod:
                 fail += 1
