@@ -204,6 +204,9 @@ SHOP_SUBDOMAIN = os.getenv("SHOP_SUBDOMAIN", "z42kyc-dt")
 STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "filtreoto.com").strip().rstrip("/")
 SHOPIFY_TOKEN  = os.getenv("SHOPIFY_TOKEN", "")
 API_VERSION    = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+# SKU index yalnızca bu vendor'ı çeker; boş bırakılırsa tüm katalog taranır.
+SHOPIFY_VENDOR = os.getenv("SHOPIFY_VENDOR", "FILTRON").strip() or None
+SHOPIFY_INDEX_FIELDS = "id,title,vendor,variants"
 
 # Supabase ürün kaynağı
 SUPABASE_URL   = os.getenv("SUPABASE_URL", "https://lrjphkajdkipwjizzxsc.supabase.co").rstrip("/")
@@ -794,14 +797,21 @@ def shopify_post(url: str, payload: dict, timeout: int = 25) -> Tuple[bool, str,
         return False, f"EXC {type(e).__name__}: {e}", None
 
 
-def load_all_products_since_id() -> List[dict]:
-    """Shopify'daki tüm ürünleri since_id pagination ile çeker. 250'şer sayfalarda okur."""
+def load_all_products_since_id(vendor: Optional[str] = SHOPIFY_VENDOR) -> List[dict]:
+    """Hedef vendor ürünlerini hafif alanlarla since_id pagination ile çeker."""
     all_products: List[dict] = []
     since_id = 0
-    log("Shopify ürünleri yükleniyor (since_id pagination) ...")
+    vendor_label = f"[{vendor}] " if vendor else "[TÜM KATALOG] "
+    log(f"Shopify {vendor_label}ürünleri yükleniyor (since_id pagination) ...")
     while True:
         url = f"{BASE}/products.json"
-        params = {"limit": 250, "since_id": since_id}
+        params = {
+            "limit": 250,
+            "since_id": since_id,
+            "fields": SHOPIFY_INDEX_FIELDS,
+        }
+        if vendor:
+            params["vendor"] = vendor
         data = shopify_get(url, params=params, timeout=30)
         if not data:
             break
@@ -810,9 +820,12 @@ def load_all_products_since_id() -> List[dict]:
             break
         all_products.extend(products)
         since_id = products[-1]["id"]
-        log(f"  ✓ Çekilen: +{len(products)} | Toplam: {len(all_products)} | since_id: {since_id}")
-        time.sleep(0.35)
-    log(f"✅ Toplam {len(all_products)} ürün yüklendi")
+        log(
+            f"  ✓ Çekilen: +{len(products)} | "
+            f"Toplam {vendor or 'Tümü'}: {len(all_products)} | since_id: {since_id}"
+        )
+        time.sleep(0.25)
+    log(f"✅ Toplam {len(all_products)} {vendor or 'Tüm'} ürünü yüklendi")
     return all_products
 
 
@@ -2649,7 +2662,7 @@ def main():
 
     # ── 2. SHOPİFY SKU INDEX ─────────────────────────────────────────────────
     print("🛒 Shopify ürünleri ve SKU index yükleniyor...")
-    products  = load_all_products_since_id()
+    products  = load_all_products_since_id(SHOPIFY_VENDOR)
     sku_index = build_sku_index(products)
 
     # ── 3. KARŞILAŞTIRMA ÖN RAPORU ───────────────────────────────────────────
