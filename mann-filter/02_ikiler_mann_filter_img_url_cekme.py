@@ -957,6 +957,10 @@ def _best_dropdown_item(cands: List, code: str):
         except Exception:
             tx = ""
         up = (tx or "").upper()
+        # Sadece kullanıcının istediği MANN-FILTER sonucu kabul edilir.
+        # Aynı kod için PURFLUX/SAKURA gibi diğer marka sonuçlarına tıklanmaz.
+        if not re.search(r"\bMANN[\s-]*FILTER\b", up):
+            continue
         if up and any(w in up for w in bad_words):
             continue
 
