@@ -1467,8 +1467,18 @@ def make_filtron_title(
     # MANN kodu
     mann = mann_display if mann_display else ""
     
+    # Başlıkta marka kısaltması: yalnızca başlık için uygulanır.
+    # Fitment/metafield verilerindeki resmi marka adı değiştirilmez.
+    title_brands = []
+    for brand in (top_brands or []):
+        normalized_brand = str(brand or "").strip()
+        if normalized_brand.upper().replace(" ", "-") in {"MERCEDES-BENZ", "MERCEDESBENZ"}:
+            normalized_brand = "Mercedes"
+        if normalized_brand and normalized_brand not in title_brands:
+            title_brands.append(normalized_brand)
+
     # Marka yoksa basit başlık
-    if not top_brands or len(top_brands) == 0:
+    if not title_brands:
         if mann:
             base = f"FILTRON {code} {type_full} | Eşdeğer: MANN {mann}"
             if len(base) <= TITLE_LIMIT:
@@ -1506,17 +1516,16 @@ def make_filtron_title(
         base = f"FILTRON {code} {type_full} | Eşdeğer: MANN {mann}"
         if len(base) <= TITLE_LIMIT:
             # Base sığdı, marka eklemeyi dene
-            result, count = try_add_brands(base, top_brands, max_brands=3)
+            result, count = try_add_brands(base, title_brands, max_brands=3)
             if count > 0:
                 return result
-            # Hiç marka sığmadı ama base sığıyor
-            return base
+            # Marka sığmadı; aşağıdaki kısa filtre tipi stratejisine düş.
     
     # STRATEJI 2: KISA TİP + EŞDEĞER + MARKALAR
     if mann:
         base = f"FILTRON {code} {type_short} | Eşdeğer: MANN {mann}"
         if len(base) <= TITLE_LIMIT:
-            result, count = try_add_brands(base, top_brands, max_brands=3)
+            result, count = try_add_brands(base, title_brands, max_brands=3)
             if count > 0:
                 return result
             return base
@@ -1524,14 +1533,14 @@ def make_filtron_title(
     # STRATEJI 3: MANN YOKSA - FULL TİP + MARKALAR
     base = f"FILTRON {code} {type_full}"
     if len(base) <= TITLE_LIMIT:
-        result, count = try_add_brands(base, top_brands, max_brands=3)
+        result, count = try_add_brands(base, title_brands, max_brands=3)
         if count > 0:
             return result
         return base
     
     # STRATEJI 4: MANN YOKSA - KISA TİP + MARKALAR
     base = f"FILTRON {code} {type_short}"
-    result, count = try_add_brands(base, top_brands, max_brands=3)
+    result, count = try_add_brands(base, title_brands, max_brands=3)
     if count > 0:
         return result
     
