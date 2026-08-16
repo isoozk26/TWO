@@ -200,18 +200,18 @@ _load_dotenv()
 # =============================================================================
 
 # Shopify bağlantı bilgileri
-SHOP_SUBDOMAIN = os.getenv("SHOP_SUBDOMAIN", "z42kyc-dt")
+SHOP_SUBDOMAIN = os.getenv("SHOP_SUBDOMAIN", "z42kyc-dt").strip()
 STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "filtreoto.com").strip().rstrip("/")
-SHOPIFY_TOKEN  = os.getenv("SHOPIFY_TOKEN", "")
-API_VERSION    = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+SHOPIFY_TOKEN  = os.getenv("SHOPIFY_TOKEN", "").strip()
+API_VERSION    = os.getenv("SHOPIFY_API_VERSION", "2024-01").strip()
 # SKU index yalnızca bu vendor'ı çeker; boş bırakılırsa tüm katalog taranır.
 SHOPIFY_VENDOR = os.getenv("SHOPIFY_VENDOR", "FILTRON").strip() or None
 SHOPIFY_INDEX_FIELDS = "id,title,vendor,variants"
 
 # Supabase ürün kaynağı
 SUPABASE_URL   = os.getenv("SUPABASE_URL", "https://lrjphkajdkipwjizzxsc.supabase.co").rstrip("/")
-SUPABASE_KEY   = os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_KEY", "")
-SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "IKILER_FILTRON")
+SUPABASE_KEY   = (os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_KEY", "")).strip()
+SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "IKILER_FILTRON").strip()
 SUPABASE_PAGE_SIZE = int(os.getenv("SUPABASE_PAGE_SIZE", "1000"))
 PRICE_MULTIPLIER = float(os.getenv("PRICE_MULTIPLIER", "1.60"))
 
@@ -219,8 +219,8 @@ PRICE_MULTIPLIER = float(os.getenv("PRICE_MULTIPLIER", "1.60"))
 MAX_ROWS = int(os.getenv("MAX_ROWS", "5"))
 
 # OpenAI ayarları
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL   = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
 # Davranış ayarları
 DRY_RUN         = (os.getenv("DRY_RUN",         "0") == "1")  # 1=test modu, Shopify'a yazmaz
