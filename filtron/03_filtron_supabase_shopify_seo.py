@@ -726,10 +726,43 @@ def load_failed_allowlist(path: str) -> List[dict]:
 # SHOPIFY HELPERS
 # =============================================================================
 
+SHOPIFY_MAX_429_RETRIES = 3
+SHOPIFY_429_FALLBACK_DELAY = 2.0
+SHOPIFY_429_MAX_DELAY = 60.0
+
+
+def _shopify_retry_delay(response, retry_number: int) -> float:
+    """Retry-After saniyesini okur; yoksa sınırlı exponential backoff kullanır."""
+    raw = response.headers.get("Retry-After", "") if getattr(response, "headers", None) else ""
+    try:
+        delay = float(raw) if raw else SHOPIFY_429_FALLBACK_DELAY * (2 ** (retry_number - 1))
+    except (TypeError, ValueError):
+        delay = SHOPIFY_429_FALLBACK_DELAY * (2 ** (retry_number - 1))
+    return max(0.0, min(delay, SHOPIFY_429_MAX_DELAY))
+
+
+def _shopify_request(method: str, url: str, timeout: int, **kwargs):
+    """Shopify 429 cevaplarında Retry-After'a uyarak en fazla 3 kez tekrarlar."""
+    request_fn = getattr(requests, method.lower())
+    for attempt in range(SHOPIFY_MAX_429_RETRIES + 1):
+        response = request_fn(url, headers=HEADERS, timeout=timeout, **kwargs)
+        if response.status_code != 429 or attempt >= SHOPIFY_MAX_429_RETRIES:
+            return response
+        retry_number = attempt + 1
+        delay = _shopify_retry_delay(response, retry_number)
+        log(
+            f"Shopify {method} 429 | retry {retry_number}/{SHOPIFY_MAX_429_RETRIES} "
+            f"| {delay:.1f}s bekleniyor | {url}",
+            "WARN",
+        )
+        time.sleep(delay)
+    raise RuntimeError("Shopify retry loop beklenmedik şekilde sonlandı")
+
+
 def shopify_get(url: str, params: Optional[dict] = None, timeout: int = 25) -> Optional[dict]:
     """Shopify Admin API'ye GET isteği atar. Hata durumunda None döner, log yazar."""
     try:
-        r = requests.get(url, headers=HEADERS, params=params, timeout=timeout)
+        r = _shopify_request("GET", url, timeout, params=params)
         if r.status_code != 200:
             log(f"Shopify GET {r.status_code} | {url} | {r.text[:200]}", "ERROR")
             return None
@@ -742,7 +775,7 @@ def shopify_get(url: str, params: Optional[dict] = None, timeout: int = 25) -> O
 def shopify_put(url: str, payload: dict, timeout: int = 25) -> Tuple[bool, str]:
     """Shopify Admin API'ye PUT isteği atar. (ok, mesaj) tuple döner."""
     try:
-        r = requests.put(url, headers=HEADERS, data=json.dumps(payload), timeout=timeout)
+        r = _shopify_request("PUT", url, timeout, data=json.dumps(payload))
         if r.status_code == 200:
             return True, "200 OK"
         return False, f"{r.status_code} {r.text[:250]}"
@@ -753,7 +786,7 @@ def shopify_put(url: str, payload: dict, timeout: int = 25) -> Tuple[bool, str]:
 def shopify_post(url: str, payload: dict, timeout: int = 25) -> Tuple[bool, str, Optional[dict]]:
     """Shopify Admin API'ye POST isteği atar. (ok, mesaj, response_dict) tuple döner."""
     try:
-        r = requests.post(url, headers=HEADERS, data=json.dumps(payload), timeout=timeout)
+        r = _shopify_request("POST", url, timeout, data=json.dumps(payload))
         if r.status_code in (200, 201):
             return True, f"{r.status_code} OK", r.json()
         return False, f"{r.status_code} {r.text[:250]}", None

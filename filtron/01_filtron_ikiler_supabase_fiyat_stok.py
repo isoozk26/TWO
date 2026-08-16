@@ -169,8 +169,8 @@ def main():
                 "newArrival":        False,
                 "newProduct":        False,
                 "comparsionProduct": False,
-                # Sadece stokta bulunan ürünleri istemeyi dene.
-                "onQuantity":        True,
+                # Sıfır stokları da al; Supabase'teki eski pozitif stoklar sıfırlanabilsin.
+                "onQuantity":        False,
                 "onWay":             False,
                 "isOem":             0,
                 "isTop50":           False,
@@ -228,11 +228,9 @@ def main():
                     if wh_name not in depo_isimleri:
                         depo_isimleri.append(wh_name)
 
-            # Güvenlik filtresi: API onQuantity filtresini uygulamasa bile
-            # toplam stoğu 0 olan ürünler Supabase'e yazılmaz.
+            # Sıfır stok ürünleri de yaz: Supabase'teki eski stok değeri temizlensin.
             if toplam_stok <= 0:
-                total_skip += 1
-                continue
+                depo_isimleri = []
 
             buffer.append({
                 'sku':               to_sku(temiz_kod),
@@ -242,10 +240,7 @@ def main():
                 'fiyat':             parse_price(son_fiyat),
                 'depo_merkezi':      ' | '.join(depo_isimleri) if depo_isimleri else 'Stok Yok',
                 'toplam_stok':       toplam_stok,
-                'mann_url':          '',
-                'img_url_1':         '',
-                'img_url_2':         '',
-                'img_url_3':         '',
+                # Görsel ve katalog URL kolonları Aşama 02 tarafından korunur.
                 'guncelleme_tarihi': datetime.now(timezone.utc).isoformat()
             })
 
