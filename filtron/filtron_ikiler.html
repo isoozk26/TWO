@@ -88,10 +88,10 @@
     <input id="openaiModel" value="gpt-4o-mini" autocomplete="off">
 
     <label for="dryRun">DRY_RUN (1=test, 0=Shopify’a gerçek yazma)</label>
-    <input id="dryRun" value="0" autocomplete="off">
+    <input id="dryRun" value="1" autocomplete="off">
 
     <label for="maxRows">MAX_ROWS (0=tüm Supabase kayıtları)</label>
-    <input id="maxRows" value="360" autocomplete="off">
+    <input id="maxRows" value="1" autocomplete="off">
 
     <label for="priceMultiplier">PRICE_MULTIPLIER</label>
     <input id="priceMultiplier" value="1.60" autocomplete="off">
@@ -117,13 +117,13 @@
     <h2>Çalıştırılacak Python dosyaları</h2>
 
     <label for="priceStock">1. Python — fiyat ve stok</label>
-    <input id="priceStock" value="C:\\VPS\\IKILER_V_2\\FILTRON\\01_filtron_ikiler_supabase_fiyat_stok.py" autocomplete="off">
+    <input id="priceStock" value="C:\\VPS\\IKILER_V_2\\FILTRON\\filtron\\01_filtron_ikiler_supabase_fiyat_stok.py" autocomplete="off">
 
     <label for="urlImages">2. Python — URL ve görseller</label>
-    <input id="urlImages" value="C:\\VPS\\IKILER_V_2\\FILTRON\\02_filtron_ikiler_supabase_url_gorsel.py" autocomplete="off">
+    <input id="urlImages" value="C:\\VPS\\IKILER_V_2\\FILTRON\\filtron\\02_filtron_ikiler_supabase_url_gorsel.py" autocomplete="off">
 
     <label for="seoScript">3. Python — Supabase → Shopify SEO</label>
-    <input id="seoScript" value="C:\\VPS\\IKILER_V_2\\FILTRON\\03_filtron_supabase_shopify_seo.py" autocomplete="off">
+    <input id="seoScript" value="C:\\VPS\\IKILER_V_2\\FILTRON\\filtron\\03_filtron_supabase_shopify_seo.py" autocomplete="off">
 
     <button class="primary" id="generate">Üç Komutu Oluştur</button>
     <button class="secondary" id="clear">Alanları Temizle</button>
