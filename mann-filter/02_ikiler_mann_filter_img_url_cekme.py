@@ -58,6 +58,7 @@ MAX_IMG = 3  # Maksimum görsel sayısı
 TYPE_DELAY = 0.04  # Yazma hızı
 DROPDOWN_WAIT_SECONDS = 5.0  # Ürün dropdown'ı için zorunlu bekleme
 PRODUCT_WAIT = 10.0  # Ürün sayfası yükleme
+GOOGLE_WAIT_SECONDS = 5.0  # MANN dropdown sonucu yoksa Google bekleme
 
 SLEEP_BETWEEN = 0.10  # İşlemler arası bekleme
 LIMIT = 0  # 0 = sınırsız
@@ -1069,6 +1070,55 @@ def dropdown_wait_and_click(d, search_input, code: str) -> Optional[str]:
     return None
 
 
+def google_click_mann_result(d, code: str) -> Optional[str]:
+    """Google'da kodu ara, yalnızca MANN-FILTER ürün sonucuna tıkla."""
+    query = quote(f'site:mann-filter.com "{code}"')
+    google_url = f"https://www.google.com/search?q={query}&num=10"
+    log("STEP", f"GOOGLE SEARCH → '{code}'")
+    d.get(google_url)
+    wait_dom_interactive(d, 14.0)
+    time.sleep(GOOGLE_WAIT_SECONDS)
+    if "/sorry/" in (d.current_url or "").lower():
+        log("WARN", f"Google otomasyon doğrulaması/CAPTCHA nedeniyle sonuç alınamadı: {code}")
+        return None
+
+    code_compact = re.sub(r"[^A-Z0-9]", "", normalize_code_display(code).upper())
+    candidates = d.find_elements(By.CSS_SELECTOR, "a[href]")
+    for a in candidates[:300]:
+        try:
+            if not a.is_displayed():
+                continue
+            href = (a.get_attribute("href") or "").strip()
+            text = (a.text or "").strip()
+            up = f"{text} {href}".upper()
+            href_l = href.lower()
+            href_compact = re.sub(r"[^A-Z0-9]", "", href.upper())
+            text_compact = re.sub(r"[^A-Z0-9]", "", text.upper())
+            if "MANN-FILTER" not in up:
+                continue
+            if code_compact not in href_compact and code_compact not in text_compact:
+                continue
+            if "mann-filter.com" not in href_l or "/urun.html/" not in href_l:
+                continue
+            log("STEP", f"GOOGLE CLICK → '{text[:80]}'")
+            before = set(d.window_handles)
+            safe_click(d, a)
+            time.sleep(0.50)
+            end = time.time() + PRODUCT_WAIT
+            while time.time() < end:
+                new_handles = [h for h in d.window_handles if h not in before]
+                if new_handles:
+                    d.switch_to.window(new_handles[-1])
+                cur = (d.current_url or "").strip()
+                if "/urun.html/" in cur:
+                    wait_dom_interactive(d, 14.0)
+                    return cur
+                time.sleep(0.20)
+        except Exception:
+            continue
+    return None
+
+
 # ===================== SESSION YÖNETİMİ =====================
 class MannCatalogSession:
     """MANN katalog session - tab yönetimi"""
@@ -1125,6 +1175,24 @@ class MannCatalogSession:
         clear_and_type_robust(self.d, self.search_input, code)
 
         product_url = dropdown_wait_and_click(self.d, self.search_input, code)
+        if not product_url:
+            # İkinci yol: MANN dropdown sonucu yoksa Google'da MANN-FILTER sonucuna tıkla.
+            self.d.switch_to.window(self.catalog_tab)
+            self.d.execute_script("window.open('about:blank', '_blank');")
+            google_handle = self.d.window_handles[-1]
+            self.d.switch_to.window(google_handle)
+            product_url = google_click_mann_result(self.d, code)
+            try:
+                if self.d.current_window_handle != self.catalog_tab:
+                    self.d.close()
+            except Exception:
+                pass
+            self.d.switch_to.window(self.catalog_tab)
+            self.d.get(CATALOG_URL)
+            wait_dom_interactive(self.d, 14.0)
+            time.sleep(0.35)
+            dismiss_overlays(self.d)
+            self.search_input = find_search_input(self.d)
         if not product_url:
             return None
 
