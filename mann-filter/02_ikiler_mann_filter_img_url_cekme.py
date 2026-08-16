@@ -56,7 +56,7 @@ HEADLESS = False  # Tarayıcı görünür
 MAX_IMG = 3  # Maksimum görsel sayısı
 
 TYPE_DELAY = 0.04  # Yazma hızı
-DROPDOWN_WAIT_SECONDS = 3.0  # Dropdown bekleme
+DROPDOWN_WAIT_SECONDS = 5.0  # Ürün dropdown'ı için zorunlu bekleme
 PRODUCT_WAIT = 10.0  # Ürün sayfası yükleme
 
 SLEEP_BETWEEN = 0.10  # İşlemler arası bekleme
@@ -1019,7 +1019,13 @@ def dropdown_wait_and_click(d, search_input, code: str) -> Optional[str]:
     log("STEP", f"WAIT {DROPDOWN_WAIT_SECONDS:.0f}sn (dropdown)")
     time.sleep(DROPDOWN_WAIT_SECONDS)
 
-    item = find_first_dropdown_item(d, search_input, code)
+    item = None
+    item_wait_end = time.time() + 12.0
+    while time.time() < item_wait_end:
+        item = find_first_dropdown_item(d, search_input, code)
+        if item:
+            break
+        time.sleep(0.25)
     if not item:
         return None
 
@@ -1103,13 +1109,7 @@ class MannCatalogSession:
         self.search_input = find_search_input(self.d)
 
     def search_open_product_tab(self, code: str) -> Optional[str]:
-        """Kod ara → dropdown'dan seç → yeni tab'da aç"""
-        # MANN URL kalıbı biliniyorsa önce doğrudan HTTP doğrulaması yap.
-        direct_url = resolve_mann_product_url(code)
-        if direct_url:
-            log("STEP", f"DIRECT URL → '{code}'")
-            return self.open_product_tab(direct_url)
-
+        """Supabase kodunu arama çubuğuna yaz → 5 sn bekle → MANN satırına tıkla."""
         self.reset()
 
         if not self.search_input:
@@ -1323,52 +1323,36 @@ def main():
         sess.start()
         for idx, row in enumerate(candidates, start=1):
             kod = clean_db_code(row.get("kod") or "")
-            existing_url = (row.get("mann_url") or "").strip()
-            # URL zaten kayıtlıysa dahili SKU/kod ile katalog araması yapma.
-            # Örn. kod=1005619501, mann_url=w7120_mann-filter.html.
-            if existing_url and "/urun.html/" in existing_url:
-                product_url = existing_url
-                # Supabase kodu geçerliyse boşluk/slash yapısını koru.
-                # Yalnızca numerik/dahili kodlarda URL'den gerçek kodu türet.
-                search_code = kod if is_valid_mann_catalog_code(kod) else code_from_product_url(existing_url)
-                log("INFO", f"[{idx}/{total}] Kayıtlı URL kullanılıyor; katalog araması yok | SKU={row.get('sku', '')} | KOD={kod}")
-            elif not kod:
+            if not kod:
                 fail += 1
                 log("WARN", f"[{idx}/{total}] Boş/geçersiz kod | SKU={row.get('sku', '')}")
                 continue
-            elif not is_valid_mann_catalog_code(kod):
+            if not is_valid_mann_catalog_code(kod):
                 fail += 1
                 log("WARN", f"[{idx}/{total}] MANN kodu değil, katalog araması atlandı: {kod} | SKU={row.get('sku', '')}")
                 continue
-            else:
-                product_url = None
-                search_code = kod
 
-            cache_key = product_url or search_code
+            # Her aday için kaynak Supabase kodu arama çubuğuna yazılır.
+            search_code = kod
+            cache_key = search_code
             if cache_key in cache:
                 product_url, category, images = cache[cache_key]
             else:
+                product_url = None
                 error = None
-                if product_url:
+                for attempt in range(1, 4):
                     try:
-                        product_url = sess.open_product_tab(product_url)
-                    except (TimeoutException, WebDriverException) as exc:
+                        product_url = sess.search_open_product_tab(search_code)
+                        error = None
+                        break
+                    except (ElementNotInteractableException, StaleElementReferenceException, TimeoutException, WebDriverException) as exc:
                         error = exc
-                        log("WARN", f"Kayıtlı URL açılamadı: {product_url} → {type(exc).__name__}")
-                else:
-                    for attempt in range(1, 4):
+                        log("WARN", f"Retry({attempt}) {search_code} → {type(exc).__name__}")
                         try:
-                            product_url = sess.search_open_product_tab(search_code)
-                            error = None
-                            break
-                        except (ElementNotInteractableException, StaleElementReferenceException, TimeoutException, WebDriverException) as exc:
-                            error = exc
-                            log("WARN", f"Retry({attempt}) {search_code} → {type(exc).__name__}")
-                            try:
-                                sess.reset()
-                            except Exception:
-                                pass
-                            time.sleep(0.45)
+                            sess.reset()
+                        except Exception:
+                            pass
+                        time.sleep(0.45)
 
                 if error or not product_url:
                     no += 1
