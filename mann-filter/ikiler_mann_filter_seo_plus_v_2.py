@@ -400,7 +400,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 def normalize_sku(sku: str) -> str:
     if not sku:
         return ""
-    return re.sub(r'[\s/]', '', str(sku).upper())
+    return re.sub(r"[^A-Z0-9]", "", str(sku).upper().strip())
 
 
 def slugify_tr(text: str) -> str:
@@ -749,14 +749,14 @@ def mann_scrape_fitment_from_url(mann_url: str) -> Dict[str, List[str]]:
     apps_head = None
     for tag in soup.find_all(["h2", "h3", "h4"]):
         t = clean(tag.get_text(" ", strip=True))
-        if "Araçlar / Uygulamalar" in t:
+        if "Araçlar / Uygulamalar" in t or "Veicoli / Applicazioni" in t:
             apps_head = tag
             break
 
     if not apps_head:
         return {}
 
-    stop_markers = ("OE Numaraları", "İndirilebilir Dosyalar")
+    stop_markers = ("OE Numaraları", "İndirilebilir Dosyalar", "Numeri OE", "Downloads")
 
     def normalize_brand_heading(txt: str) -> Optional[str]:
         s = clean(txt)
