@@ -51,7 +51,7 @@
       <div class="stage-card">
         <div class="stage-number">AŞAMA 03</div>
         <div class="stage-title">Shopify SEO</div>
-        <div class="stage-flow">Supabase → Shopify<br><strong>03_mann_supabase_shopify_seo.py</strong></div>
+        <div class="stage-flow">Supabase → Shopify<br><strong>03_ikiler_mann_filter_seo_plus_v_2.py</strong></div>
       </div>
     </div>
 
@@ -67,7 +67,7 @@
     <input id="maxProducts" value="5" autocomplete="off">
 
     <label for="secret">SUPABASE_SECRET_KEY</label>
-    <input id="secret" class="secret-mask" type="text" value="" data-secret="" placeholder="Secret key değerini buraya girin" autocomplete="off">
+    <input id="secret" class="secret-mask" type="text" value="••••••••••••" placeholder="Supabase secret key değerini girin" autocomplete="off">
 
     <label for="cookiePath">İKİLER COOKIE DOSYASI</label>
     <input id="cookiePath" value="C:\VPS\IKILER_V_2\MANN\cookie.txt" autocomplete="off">
@@ -76,10 +76,10 @@
     <textarea id="cookie" rows="4" autocomplete="off"></textarea>
 
     <label for="shopifyToken">SHOPIFY_TOKEN</label>
-    <input id="shopifyToken" class="secret-mask" type="text" value="" data-secret="" placeholder="Shopify Admin API token" autocomplete="off">
+    <input id="shopifyToken" class="secret-mask" type="text" value="••••••••••••" placeholder="Shopify Admin API token değerini girin" autocomplete="off">
 
     <label for="openaiKey">OPENAI_API_KEY</label>
-    <input id="openaiKey" class="secret-mask" type="text" value="" data-secret="" placeholder="OpenAI API key" autocomplete="off">
+    <input id="openaiKey" class="secret-mask" type="text" value="••••••••••••" placeholder="OpenAI API key gerekirse girin" autocomplete="off">
 
     <label for="shopSubdomain">SHOP_SUBDOMAIN</label>
     <input id="shopSubdomain" value="z42kyc-dt" autocomplete="off">
@@ -87,17 +87,29 @@
     <label for="shopifyApiVersion">SHOPIFY_API_VERSION</label>
     <input id="shopifyApiVersion" value="2024-01" autocomplete="off">
 
+    <label for="storefrontDomain">STOREFRONT_DOMAIN</label>
+    <input id="storefrontDomain" value="filtreoto.com" autocomplete="off">
+
+    <label for="shopifyVendor">SHOPIFY_VENDOR</label>
+    <input id="shopifyVendor" value="MANN" autocomplete="off">
+
+    <label for="createStatus">CREATE_STATUS</label>
+    <input id="createStatus" value="draft" autocomplete="off">
+
+    <label for="writeJsonLd">WRITE_SEO_STRUCTURED_METAFIELD (1=aktif)</label>
+    <input id="writeJsonLd" value="1" autocomplete="off">
+
     <label for="openaiModel">OPENAI_MODEL</label>
     <input id="openaiModel" value="gpt-4o-mini" autocomplete="off">
 
     <label for="dryRun">DRY_RUN (1=test, 0=Shopify’a gerçek yazma)</label>
-    <input id="dryRun" value="0" autocomplete="off">
+    <input id="dryRun" value="1" autocomplete="off">
 
-    <label for="maxRows">MAX_ROWS (0=MANN kapsamındaki tüm Supabase kayıtları)</label>
+    <label for="maxRows">MAX_PRODUCTS (0=MANN kapsamındaki tüm Supabase kayıtları)</label>
     <input id="maxRows" value="0" autocomplete="off">
 
     <label for="priceMultiplier">PRICE_MULTIPLIER</label>
-    <input id="priceMultiplier" value="1.60" autocomplete="off">
+    <input id="priceMultiplier" value="1.00" autocomplete="off">
 
     <label for="shopifySleep">SHOPIFY_SLEEP</label>
     <input id="shopifySleep" value="0.6" autocomplete="off">
@@ -126,7 +138,7 @@
     <input id="urlImages" value="C:\\VPS\\IKILER_V_2\\MANN\\02_ikiler_mann_filter_img_url_cekme.py" autocomplete="off">
 
     <label for="seoScript">3. Python — Supabase → Shopify SEO</label>
-    <input id="seoScript" value="C:\\VPS\\IKILER_V_2\\MANN\\03_mann_supabase_shopify_seo.py" autocomplete="off">
+    <input id="seoScript" value="C:\\VPS\\IKILER_V_2\\MANN\\03_ikiler_mann_filter_seo_plus_v_2.py" autocomplete="off">
 
     <button class="primary" id="generate">Üç Komutu Oluştur</button>
     <button class="secondary" id="clear">Alanları Temizle</button>
@@ -200,6 +212,10 @@
       const openaiKey = secretValue('openaiKey');
       const shopSubdomain = $('shopSubdomain').value.trim();
       const shopifyApiVersion = $('shopifyApiVersion').value.trim();
+      const storefrontDomain = $('storefrontDomain').value.trim();
+      const shopifyVendor = $('shopifyVendor').value.trim();
+      const createStatus = $('createStatus').value.trim();
+      const writeJsonLd = $('writeJsonLd').value.trim();
       const openaiModel = $('openaiModel').value.trim();
       const dryRun = $('dryRun').value.trim();
       const maxRows = $('maxRows').value.trim();
@@ -214,7 +230,8 @@
       const urlImages = $('urlImages').value.trim();
       const seoScript = $('seoScript').value.trim();
 
-      if (!url || !table || !secret || !cookiePath || !cookie || !shopifyToken || !openaiKey || !shopSubdomain || !shopifyApiVersion || !openaiModel || !priceStock || !urlImages || !seoScript) {
+      const isMasked = value => !value || value.includes('•') || value.includes('[REDACTED]');
+      if (!url || !table || isMasked(secret) || !cookiePath || !cookie || isMasked(shopifyToken) || isMasked(openaiKey) || !shopSubdomain || !shopifyApiVersion || !storefrontDomain || !shopifyVendor || !createStatus || !openaiModel || !priceStock || !urlImages || !seoScript) {
         $('status').textContent = '🔴 Gerekli alanlar eksik.';
         $('output1').value = $('output2').value = $('output3').value = '';
         document.querySelectorAll('.copy-btn').forEach(b => b.disabled = true);
@@ -250,10 +267,12 @@
         "$env:SHOP_SUBDOMAIN = " + psQuote(shopSubdomain),
         "$env:SHOPIFY_API_VERSION = " + psQuote(shopifyApiVersion),
         "$env:OPENAI_MODEL = " + psQuote(openaiModel),
-        "$env:SHOPIFY_VENDOR = 'MANN'",
-        "$env:WRITE_SEO_STRUCTURED_METAFIELD = '1'",
+        "$env:SHOPIFY_VENDOR = " + psQuote(shopifyVendor),
+        "$env:STOREFRONT_DOMAIN = " + psQuote(storefrontDomain),
+        "$env:CREATE_STATUS = " + psQuote(createStatus),
+        "$env:WRITE_SEO_STRUCTURED_METAFIELD = " + psQuote(writeJsonLd || '1'),
         "$env:DRY_RUN = " + psQuote(dryRun || '0'),
-        "$env:MAX_ROWS = " + psQuote(maxRows || '360'),
+        "$env:MAX_PRODUCTS = " + psQuote(maxRows || '1'),
         "$env:PRICE_MULTIPLIER = " + psQuote(priceMultiplier || '1.60'),
         "$env:SHOPIFY_SLEEP = " + psQuote(shopifySleep || '0.6'),
         "$env:MANN_SLEEP = " + psQuote(mannSleep || '0.2'),

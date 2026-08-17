@@ -2,7 +2,7 @@
 
 r"""
 ================================================================================
-MANN FILTER SEO ENRICHER [V4.0 - MAHLE STYLE TEMPLATE]
+MANN FILTER SEO ENRICHER [V4.1 - MAHLE STYLE + JSON-LD]
 
 INPUT: Supabase public.IKILER_MANN (MANN-FILTER ürünleri)
 CROSS-REF: ufi_cross_referans_STABLE.csv
@@ -13,12 +13,13 @@ OUTPUT: Shopify ürün oluşturma/güncelleme
 2) HTML ŞABLON - MAHLE master template ile birebir aynı
 3) DIŞ LİNKLER - Sadece MANN-FILTER (3 link → 1 link)
 4) ŞASE NO - "Şase No ile Kontrol" (Şase/Marka-Model DEĞİL)
-5) ETİKETLER - 6 önemli marka (HENGST, BOSCH, MAHLE, FILTRON, PURFLUX, UFI)
-6) EŞDEĞER BÖLÜMÜ - HTML'de eşdeğer kodlar tablosu
-7) STOK MANTIK - CSV stoktan düşürme (5+→5, 4→3, 3→2, 2→1, 1→1, 0→0)
-8) FİYAT - 1.58x çarpan
-9) BAŞLIK - 70 char max, 1-3 araç
-10) META - 160 char, 6 rotating template (MAHLE style)
+5) ETİKETLER - MANN, filtre tipi ve öncelikli eşdeğerler
+6) EŞDEĞER BÖLÜMÜ - En fazla HENGST, BOSCH, MAHLE
+7) STOK MANTIK - 0→0, 1→1, 2→2, 3→2, 4+→3
+8) FİYAT - Supabase fiyatı × HTML PRICE_MULTIPLIER
+9) BAŞLIK - 70 karaktere kadar, 1-3 araç
+10) META - 160 karaktere kadar, MANN SEO şablonu
+11) JSON-LD - custom.seo_structured_data metafield’ı
 
 ================================================================================
 """
@@ -42,9 +43,10 @@ from openai import OpenAI
 # CONFIG
 # =============================================================================
 
-SHOP_SUBDOMAIN = os.getenv("SHOP_SUBDOMAIN", "z42kyc-dt")
-SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN", "")
-API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+SHOP_SUBDOMAIN = os.getenv("SHOP_SUBDOMAIN", "z42kyc-dt").strip()
+STOREFRONT_DOMAIN = os.getenv("STOREFRONT_DOMAIN", "filtreoto.com").strip().rstrip("/")
+SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN", "").strip()
+API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01").strip()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://lrjphkajdkipwjizzxsc.supabase.co").rstrip("/")
 SUPABASE_KEY = (os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_KEY", "")).strip()
@@ -53,8 +55,9 @@ SUPABASE_PAGE_SIZE = int(os.getenv("SUPABASE_PAGE_SIZE", "1000"))
 SHOPIFY_VENDOR = os.getenv("SHOPIFY_VENDOR", "MANN").strip() or "MANN"
 UFI_CROSS_REF_PATH = os.getenv("UFI_CROSS_REF_PATH", "ufi_cross_referans_STABLE.csv")
 
-# Fiyat Supabase IKILER_MANN.fiyat alanından doğrudan alınır; çarpan yoktur.
-PRICE_MULTIPLIER = 1.0
+# HTML/ortam değişkeninden alınan fiyat çarpanı.
+# 1.00 = Supabase fiyatını doğrudan kullanır; marka kuralı HTML'den değiştirilebilir.
+PRICE_MULTIPLIER = float(os.getenv("PRICE_MULTIPLIER", "1.00"))
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -76,6 +79,7 @@ WRITE_BODY_HTML = True
 WRITE_META = True
 UPDATE_PRICE = True
 UPDATE_TAGS = True
+WRITE_SEO_STRUCTURED_METAFIELD = (os.getenv("WRITE_SEO_STRUCTURED_METAFIELD", "1") == "1")
 
 TITLE_MAX_LEN = 70
 BODY_MAX_TOTAL_MODELS = 160
@@ -1325,6 +1329,106 @@ Bilgi Erişimi: Kapsamlı uyumluluk tablosu, ürün ek veri alanlarında saklanm
 </p>"""
 
 
+
+def _plain_text(value: str) -> str:
+    """HTML veya düz metni JSON-LD için sade metne çevirir."""
+    if not value:
+        return ""
+    return BeautifulSoup(str(value), "html.parser").get_text(" ", strip=True)
+
+
+def _short_jsonld_description(value: str, fallback: str, max_length: int = 320) -> str:
+    text = re.sub(r"\s+", " ", _plain_text(value or fallback)).strip()
+    if len(text) <= max_length:
+        return text
+    return text[:max_length].rsplit(" ", 1)[0].rstrip(" ,.;:-") + "."
+
+
+def upsert_seo_structured_data(
+    product_id: int,
+    canonical_sku: str,
+    external_code: str,
+    filter_type_title: str,
+    price: float,
+    stock_qty: int,
+    meta_desc: str = "",
+    mann_display: Optional[str] = None,
+    total_models: int = 0,
+    equivalents: Optional[List[Dict[str, str]]] = None,
+) -> bool:
+    """MANN Product JSON-LD'sini custom.seo_structured_data metafield'ına yazar."""
+    if not WRITE_SEO_STRUCTURED_METAFIELD:
+        return True
+
+    if DRY_RUN:
+        log(
+            f"[DRY_RUN] seo_structured_data -> pid={product_id} "
+            f"sku={canonical_sku} price={price} stock={stock_qty}"
+        )
+        return True
+
+    product_data = shopify_get(f"{BASE}/products/{product_id}.json", timeout=25)
+    product = (product_data or {}).get("product") or {}
+    handle = str(product.get("handle") or "").strip()
+    if not handle:
+        log(f"seo_structured_data: Shopify handle bulunamadı pid={product_id}", "ERROR")
+        return False
+
+    storefront_url = f"https://{STOREFRONT_DOMAIN}/products/{handle}"
+    images = []
+    for image in product.get("images") or []:
+        src = str(image.get("src") or "").strip()
+        if src and src not in images:
+            images.append(src)
+
+    fallback = (
+        f"MANN-FILTER {external_code or canonical_sku} {filter_type_title}. "
+        f"Uyumlu araç ve ürün bilgilerini kontrol ederek güvenli alışveriş yapın."
+    )
+    document = {
+        "@context": "https://schema.org",
+        "@type": "Product",
+        "@id": f"{storefront_url}#product",
+        "url": storefront_url,
+        "name": str(product.get("title") or fallback).strip(),
+        "image": images,
+        "description": _short_jsonld_description(meta_desc, fallback),
+        "sku": canonical_sku,
+        "mpn": external_code or canonical_sku,
+        "brand": {"@type": "Brand", "name": "MANN-FILTER"},
+        "category": filter_type_title,
+        "offers": {
+            "@type": "Offer",
+            "url": storefront_url,
+            "priceCurrency": "TRY",
+            "price": f"{float(price):.2f}",
+            "availability": "https://schema.org/InStock" if int(stock_qty or 0) > 0 else "https://schema.org/OutOfStock",
+            "itemCondition": "https://schema.org/NewCondition",
+            "seller": {"@type": "Organization", "name": "FiltreOto"},
+        },
+    }
+    properties = [
+        {"@type": "PropertyValue", "name": "Filtre Türü", "value": filter_type_title},
+        {"@type": "PropertyValue", "name": "MANN-FILTER Kodu", "value": mann_display or external_code or canonical_sku},
+        {"@type": "PropertyValue", "name": "Uyumlu Araç Sayısı", "value": f"{int(total_models or 0)} Model"},
+    ]
+    for eq in equivalents or []:
+        properties.append({
+            "@type": "PropertyValue",
+            "name": f"{eq.get('brand', '')} Eşdeğer Kodu",
+            "value": str(eq.get("code") or ""),
+        })
+    document["additionalProperty"] = properties
+
+    return upsert_metafield(
+        product_id,
+        "custom",
+        "seo_structured_data",
+        "json",
+        json.dumps(document, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
 def load_items_from_supabase(max_rows: int = 0) -> List[dict]:
     """IKILER_MANN tablosunu sayfalı okuyup SEO işlem kayıtlarına dönüştürür."""
     if not SUPABASE_KEY:
@@ -1360,7 +1464,7 @@ def load_items_from_supabase(max_rows: int = 0) -> List[dict]:
             if not canonical:
                 continue
             try:
-                price = float(row.get("fiyat") or 0)
+                price = round(float(row.get("fiyat") or 0) * PRICE_MULTIPLIER, 2)
             except (TypeError, ValueError):
                 price = 0.0
             try:
@@ -1419,7 +1523,10 @@ def main():
     log("=" * 80)
     log("🚀 MANN FILTER SEO ENRICHER - SUPABASE IKILER_MANN")
     log(f"Supabase table: {SUPABASE_TABLE} | vendor: {SHOPIFY_VENDOR}")
-    log(f"DRY_RUN={DRY_RUN} | RESUME_EXISTING={RESUME_EXISTING} | MAX_PRODUCTS={MAX_PRODUCTS or 'TÜMÜ'}")
+    log(
+        f"DRY_RUN={DRY_RUN} | RESUME_EXISTING={RESUME_EXISTING} | "
+        f"MAX_PRODUCTS={MAX_PRODUCTS or 'TÜMÜ'} | PRICE_MULTIPLIER={PRICE_MULTIPLIER}"
+    )
 
     ufi_cross_ref = load_ufi_cross_reference()
     items = load_items_from_supabase(MAX_PRODUCTS)
@@ -1444,16 +1551,23 @@ def main():
         filter_type = item["filter_type"]
         price = item["price"]
         raw_stock = item["stock"]
-        stock_qty = 3 if raw_stock > 3 else 2 if raw_stock in (2, 3) else 1 if raw_stock == 1 else 0
+        stock_qty = 3 if raw_stock >= 4 else 2 if raw_stock in (2, 3) else 1 if raw_stock == 1 else 0
         equivalents = select_priority_equivalents(ufi_cross_ref.get(sku, []))
         product_url = item["mann_url"]
         images = item["image_urls"]
 
         try:
             log(f"[{idx}/{len(items)}] {external_code} | fiyat={price:.2f} | stok={raw_stock}->{stock_qty}")
-            if not product_url:
-                log(f"{sku}: mann_url boş; fitment atlanacak.", "WARN")
             vehicles = mann_scrape_fitment_from_url(product_url) if product_url else {}
+            top_vehicles = get_top_vehicles_for_title(vehicles, limit=3)
+            top_brand = top_vehicles[0][0] if top_vehicles else None
+            title = make_mann_title(external_code, filter_type, vehicles, TITLE_MAX_LEN)
+            meta_desc = build_meta_description_mann(external_code, filter_type, vehicles, idx)
+            tags_csv = build_tags_csv_mann(external_code, filter_type, equivalents)
+            body_html = build_body_html_mann_mahle_template(
+                external_code, filter_type, equivalents, vehicles, product_url, top_brand
+            )
+            total_models = sum(len(models) for models in vehicles.values())
 
             if sku in sku_index and not RESUME_EXISTING:
                 data = sku_index[sku]
@@ -1461,25 +1575,30 @@ def main():
                 variant_id = data["variant_id"]
                 if DRY_RUN:
                     log(f"[DRY_RUN] EXISTING sku={sku} price={price:.2f} stock={stock_qty}")
+                    log(f"[DRY_RUN] seo_structured_data -> pid={product_id} sku={sku}")
                     success += 1
                     continue
                 if not update_variant_price_sku(variant_id, sku, price):
                     raise RuntimeError("variant fiyat/SKU güncelleme başarısız")
                 if not set_inventory_available(data.get("inventory_item_id"), location_id, stock_qty):
                     raise RuntimeError("stok güncelleme başarısız")
-                category_payload = {"product": {"id": product_id, "product_type": filter_type, "tags": build_tags_csv_mann(external_code, filter_type, equivalents)}}
+                category_payload = {
+                    "product": {
+                        "id": product_id,
+                        "product_type": filter_type,
+                        "tags": tags_csv,
+                    }
+                }
                 ok, msg = shopify_put(f"{BASE}/products/{product_id}.json", category_payload)
                 if not ok:
                     raise RuntimeError(f"kategori/tag güncelleme başarısız: {msg}")
+                if not upsert_seo_structured_data(
+                    product_id, sku, external_code, filter_type, price, stock_qty,
+                    meta_desc, external_code, total_models, equivalents,
+                ):
+                    raise RuntimeError("JSON-LD metafield güncellenemedi")
                 success += 1
                 continue
-
-            top_vehicles = get_top_vehicles_for_title(vehicles, limit=3)
-            top_brand = top_vehicles[0][0] if top_vehicles else None
-            title = make_mann_title(external_code, filter_type, vehicles, TITLE_MAX_LEN)
-            meta_desc = build_meta_description_mann(external_code, filter_type, vehicles, idx)
-            tags_csv = build_tags_csv_mann(external_code, filter_type, equivalents)
-            body_html = build_body_html_mann_mahle_template(external_code, filter_type, equivalents, vehicles, product_url, top_brand)
 
             if sku in sku_index:
                 data = sku_index[sku]
@@ -1490,6 +1609,7 @@ def main():
             else:
                 if DRY_RUN:
                     log(f"[DRY_RUN] CREATE sku={sku} title={title} price={price:.2f} stock={stock_qty}")
+                    log(f"[DRY_RUN] seo_structured_data -> new product sku={sku}")
                     success += 1
                     continue
                 created = create_product_mann(sku, title, filter_type, price, images)
@@ -1503,10 +1623,21 @@ def main():
 
             if DRY_RUN:
                 log(f"[DRY_RUN] ENRICH sku={sku} title={title} eq={len(equivalents)}")
+                log(f"[DRY_RUN] seo_structured_data -> pid={product_id} sku={sku}")
                 success += 1
                 continue
 
-            payload = {"product": {"id": product_id, "vendor": "MANN", "product_type": filter_type, "status": CREATE_STATUS, "title": title, "body_html": body_html, "tags": tags_csv}}
+            payload = {
+                "product": {
+                    "id": product_id,
+                    "vendor": SHOPIFY_VENDOR,
+                    "product_type": filter_type,
+                    "status": CREATE_STATUS,
+                    "title": title,
+                    "body_html": body_html,
+                    "tags": tags_csv,
+                }
+            }
             ok, msg = shopify_put(f"{BASE}/products/{product_id}.json", payload)
             if not ok:
                 raise RuntimeError(f"ürün PUT başarısız: {msg}")
@@ -1525,6 +1656,11 @@ def main():
             add_product_to_collections(product_id, filter_type, vehicles, collections_map)
             if created_now:
                 set_product_handle_safe(product_id, title, sku)
+            if not upsert_seo_structured_data(
+                product_id, sku, external_code, filter_type, price, stock_qty,
+                meta_desc, external_code, total_models, equivalents,
+            ):
+                raise RuntimeError("JSON-LD metafield yazılamadı")
             success += 1
             log(f"✅ {sku}: {'CREATE' if created_now else 'UPDATE'} tamamlandı")
         except Exception as exc:
